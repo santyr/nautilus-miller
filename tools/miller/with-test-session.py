@@ -57,6 +57,8 @@ def main():
             path = root / name
             path.mkdir(mode=0o700)
             env[key] = str(path)
+        (root / 'tmp').mkdir(mode=0o700)
+        env['TMPDIR'] = str(root / 'tmp')
         env.pop('DISPLAY', None)
         env.pop('WAYLAND_DISPLAY', None)
         env['GVFS_DISABLE_FUSE'] = '1'

@@ -88,10 +88,17 @@ test_branch_selection (void)
     g_assert_cmpuint (after->len, ==, before->len + 1);
     g_assert_true (g_file_equal (nautilus_miller_view_get_location (strip), a));
     g_assert_true (nautilus_miller_view_get_active_view (strip) == parent);
+    g_autoptr (NautilusFilesView) discarded = g_object_ref (after->pdata[after->len - 1]);
     select_path (parent, b, FALSE);
+    settle (strip);
+    g_signal_emit_by_name (discarded, "end-loading", TRUE);
+    g_signal_emit_by_name (discarded, "selection-changed");
     settle (strip);
     g_assert_true (g_file_equal (nautilus_miller_view_get_location (strip), b));
     gtk_selection_model_select_all (GTK_SELECTION_MODEL (nautilus_files_view_get_private_model (parent)));
+    g_signal_emit_by_name (parent, "end-loading", TRUE);
+    g_autolist (NautilusFile) newest = nautilus_files_view_get_selection (parent);
+    g_assert_cmpuint (g_list_length (newest), ==, 3);
     settle (strip);
     g_assert_true (g_file_equal (nautilus_miller_view_get_location (strip), root));
     select_path (parent, leaf, FALSE);
@@ -495,6 +502,159 @@ test_automatic_selection_revealed (void)
 }
 
 static void
+emit_column_focus (NautilusFilesView *view)
+{
+    g_autoptr (GListModel) controllers = gtk_widget_observe_controllers (GTK_WIDGET (view));
+    for (guint i = 0; i < g_list_model_get_n_items (controllers); i++)
+    {
+        g_autoptr (GtkEventController) controller = g_list_model_get_item (controllers, i);
+        if (GTK_IS_EVENT_CONTROLLER_FOCUS (controller))
+        {
+            g_signal_emit_by_name (controller, "enter");
+        }
+    }
+}
+
+static GtkWidget *
+find_widget_type (GtkWidget *widget, GType type)
+{
+    if (G_TYPE_CHECK_INSTANCE_TYPE (widget, type)) { return widget; }
+    for (GtkWidget *child = gtk_widget_get_first_child (widget); child != NULL;
+         child = gtk_widget_get_next_sibling (child))
+    {
+        GtkWidget *found = find_widget_type (child, type);
+        if (found != NULL) { return found; }
+    }
+    return NULL;
+}
+
+static void
+test_context_menu_owns_its_actions (void)
+{
+    g_autoptr (NautilusWindowSlot) slot = nautilus_window_slot_new (NAUTILUS_MODE_BROWSE);
+    g_autoptr (NautilusMillerView) strip = g_object_ref_sink (nautilus_miller_view_new (slot));
+    g_autoptr (GFile) root = g_file_new_for_path (test_get_tmp_dir ());
+    g_autoptr (GFile) a = g_file_get_child (root, "A");
+    g_autoptr (GFile) b = g_file_get_child (root, "B");
+    g_assert_true (g_file_make_directory (a, NULL, NULL));
+    g_assert_true (g_file_make_directory (b, NULL, NULL));
+    GtkWidget *window = gtk_window_new ();
+    gtk_window_set_default_size (GTK_WINDOW (window), 1100, 600);
+    gtk_window_set_child (GTK_WINDOW (window), GTK_WIDGET (strip));
+    nautilus_miller_view_set_location (strip, root, NULL);
+    nautilus_miller_view_set_active (strip, TRUE);
+    gtk_window_present (GTK_WINDOW (window));
+    settle (strip);
+    wait_frame (window);
+    NautilusFilesView *parent = nautilus_miller_view_get_active_view (strip);
+    select_path (parent, a, FALSE);
+    settle (strip);
+    g_autoptr (GPtrArray) views = get_views (strip);
+    g_autoptr (NautilusFilesView) child = g_object_ref (views->pdata[views->len - 1]);
+    g_assert_true (gtk_widget_activate_action (GTK_WIDGET (parent), "view.popup-menu", NULL));
+    GtkWidget *menu = find_widget_type (GTK_WIDGET (parent), GTK_TYPE_POPOVER_MENU);
+    g_assert_nonnull (menu);
+    /* Unit-level controller event. Actual compositor input is a separate gate. */
+    emit_column_focus (child);
+    g_assert_true (nautilus_miller_view_get_active_view (strip) == child);
+    gtk_widget_grab_focus (GTK_WIDGET (child));
+    gtk_popover_popdown (GTK_POPOVER (menu));
+    wait_frame (window);
+    settle (strip);
+    g_assert_true (nautilus_miller_view_get_active_view (strip) == child);
+    g_assert_true (gtk_widget_activate_action (GTK_WIDGET (parent), "view.popup-menu", NULL));
+    menu = find_widget_type (GTK_WIDGET (parent), GTK_TYPE_POPOVER_MENU);
+    g_assert_nonnull (menu);
+    emit_column_focus (child);
+    g_assert_true (gtk_widget_activate_action (menu, "view.select-all", NULL));
+    g_autolist (NautilusFile) selected = nautilus_files_view_get_selection (parent);
+    g_assert_cmpuint (g_list_length (selected), ==, 2);
+    g_autolist (NautilusFile) child_selection = nautilus_files_view_get_selection (child);
+    g_assert_null (child_selection);
+    gtk_popover_popdown (GTK_POPOVER (menu));
+    settle (strip);
+    gtk_window_destroy (GTK_WINDOW (window));
+    test_clear_tmp_dir ();
+}
+
+static void
+test_new_folder_captures_parent_context (void)
+{
+    g_autoptr (NautilusWindowSlot) slot = nautilus_window_slot_new (NAUTILUS_MODE_BROWSE);
+    g_autoptr (NautilusMillerView) strip = g_object_ref_sink (nautilus_miller_view_new (slot));
+    g_autoptr (GFile) root = g_file_new_for_path (test_get_tmp_dir ());
+    g_autoptr (GFile) child = g_file_get_child (root, "child");
+    g_autoptr (GFile) sibling = g_file_get_child (root, "untouched");
+    g_assert_true (g_file_make_directory (child, NULL, NULL));
+    g_assert_true (g_file_replace_contents (sibling, "sentinel", 8, NULL, FALSE, 0, NULL, NULL, NULL));
+    GtkWidget *window = adw_window_new ();
+    GtkWidget *box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
+    GtkWidget *entry = gtk_entry_new ();
+    gtk_box_append (GTK_BOX (box), entry);
+    gtk_box_append (GTK_BOX (box), GTK_WIDGET (strip));
+    gtk_widget_set_vexpand (GTK_WIDGET (strip), TRUE);
+    adw_window_set_content (ADW_WINDOW (window), box);
+    gtk_window_set_default_size (GTK_WINDOW (window), 1100, 600);
+    nautilus_miller_view_set_location (strip, root, NULL);
+    nautilus_miller_view_set_active (strip, TRUE);
+    gtk_window_present (GTK_WINDOW (window));
+    settle (strip);
+    wait_frame (window);
+    NautilusFilesView *parent = nautilus_miller_view_get_active_view (strip);
+    select_path (parent, child, FALSE);
+    settle (strip);
+    g_autoptr (GPtrArray) views = get_views (strip);
+    NautilusFilesView *child_view = views->pdata[views->len - 1];
+    gtk_widget_grab_focus (entry);
+    g_assert_true (nautilus_miller_view_get_active_view (strip) == parent);
+    g_assert_true (gtk_widget_activate_action (window, "view.new-folder", NULL));
+    AdwDialog *dialog = adw_window_get_visible_dialog (ADW_WINDOW (window));
+    g_assert_nonnull (dialog);
+    GtkWidget *name = find_widget_type (GTK_WIDGET (dialog), ADW_TYPE_ENTRY_ROW);
+    g_assert_nonnull (name);
+    gtk_editable_set_text (GTK_EDITABLE (name), "Created in parent");
+    emit_column_focus (child_view);
+    g_signal_emit_by_name (name, "entry-activated");
+    g_autoptr (GFile) created = g_file_get_child (root, "Created in parent");
+    g_autoptr (GFile) wrong = g_file_get_child (child, "Created in parent");
+    gint64 deadline = g_get_monotonic_time () + 10 * G_TIME_SPAN_SECOND;
+    while (!g_file_query_exists (created, NULL) && g_get_monotonic_time () < deadline)
+    {
+        g_main_context_iteration (NULL, FALSE);
+        g_usleep (1000);
+    }
+    g_assert_true (g_file_query_exists (created, NULL));
+    g_assert_false (g_file_query_exists (wrong, NULL));
+    g_autofree char *contents = NULL;
+    g_assert_true (g_file_load_contents (sibling, NULL, &contents, NULL, NULL, NULL));
+    g_assert_cmpstr (contents, ==, "sentinel");
+    settle (strip);
+    /* The empty child's own toolbar context must be ready as well. */
+    emit_column_focus (child_view);
+    gtk_widget_grab_focus (entry);
+    g_assert_true (gtk_widget_activate_action (window, "view.new-folder", NULL));
+    dialog = adw_window_get_visible_dialog (ADW_WINDOW (window));
+    g_assert_nonnull (dialog);
+    name = find_widget_type (GTK_WIDGET (dialog), ADW_TYPE_ENTRY_ROW);
+    g_assert_nonnull (name);
+    gtk_editable_set_text (GTK_EDITABLE (name), "Created in child");
+    g_signal_emit_by_name (name, "entry-activated");
+    g_autoptr (GFile) child_created = g_file_get_child (child, "Created in child");
+    g_autoptr (GFile) parent_wrong = g_file_get_child (root, "Created in child");
+    deadline = g_get_monotonic_time () + 10 * G_TIME_SPAN_SECOND;
+    while (!g_file_query_exists (child_created, NULL) && g_get_monotonic_time () < deadline)
+    {
+        g_main_context_iteration (NULL, FALSE);
+        g_usleep (1000);
+    }
+    g_assert_true (g_file_query_exists (child_created, NULL));
+    g_assert_false (g_file_query_exists (parent_wrong, NULL));
+    settle (strip);
+    gtk_window_destroy (GTK_WINDOW (window));
+    test_clear_tmp_dir ();
+}
+
+static void
 test_full_window_operations (void)
 {
     g_settings_set_enum (nautilus_preferences, NAUTILUS_PREFERENCES_DEFAULT_FOLDER_VIEWER, 4);
@@ -568,6 +728,12 @@ test_full_window_operations (void)
     g_object_get (window, "active-slot", &second_slot, NULL);
     g_assert_true (second_slot != slot);
     settle_slot (second_slot);
+    g_assert_true (g_object_get_data (G_OBJECT (window), "nautilus-active-file-view") ==
+        nautilus_window_slot_get_current_view (second_slot));
+    g_signal_emit_by_name (destination, "selection-changed");
+    settle_slot (second_slot);
+    g_assert_true (g_object_get_data (G_OBJECT (window), "nautilus-active-file-view") ==
+        nautilus_window_slot_get_current_view (second_slot));
     g_object_set (window, "active-slot", slot, NULL);
     g_assert_true (nautilus_window_slot_get_active (slot));
     g_assert_false (nautilus_window_slot_get_active (second_slot));
@@ -605,6 +771,8 @@ main (int argc, char **argv)
     g_test_add_func ("/miller/view/error-is-local", test_error_is_local);
     g_test_add_func ("/miller/view/keyboard-and-focus", test_keyboard_and_focus);
     g_test_add_func ("/miller/view/automatic-selection-revealed", test_automatic_selection_revealed);
+    g_test_add_func ("/miller/view/context-menu-action-owner", test_context_menu_owns_its_actions);
+    g_test_add_func ("/miller/view/new-folder-parent-context", test_new_folder_captures_parent_context);
     g_test_add_func ("/miller/view/branch-selection", test_branch_selection);
     g_test_add_func ("/miller/view/deep-path-and-replacement", test_deep_path_and_replacement);
     return g_test_run ();

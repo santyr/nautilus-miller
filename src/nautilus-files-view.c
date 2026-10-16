@@ -3059,6 +3059,20 @@ nautilus_files_view_set_action_context (NautilusFilesView *view, gboolean active
 {
     GtkRoot *root = gtk_widget_get_root (GTK_WIDGET (view));
     view->active = active;
+    if (!active && view->managed_context)
+    {
+        /* End the old popup interaction before GTK can restore focus to its
+         * owner during a later popdown. Menu actions already in flight still
+         * resolve through this FilesView's local action group. */
+        if (view->selection_menu != NULL)
+        {
+            gtk_widget_set_visible (view->selection_menu, FALSE);
+        }
+        if (view->background_menu != NULL)
+        {
+            gtk_widget_set_visible (view->background_menu, FALSE);
+        }
+    }
     if (root == NULL) { return; }
     if (active)
     {
@@ -8233,6 +8247,17 @@ nautilus_files_view_update_toolbar_menus (NautilusFilesView *self)
 }
 
 static void
+restore_context_menu_focus (NautilusFilesView *self)
+{
+    /* Another column/tab may have become the action owner while this menu
+     * was open. Closing an old menu must not take that context back. */
+    if (self->active && !self->in_destruction && gtk_widget_get_root (GTK_WIDGET (self)) != NULL)
+    {
+        gtk_widget_grab_focus (GTK_WIDGET (self));
+    }
+}
+
+static void
 nautilus_files_view_pop_up_selection_context_menu (NautilusFilesView *self,
                                                    graphene_point_t  *point)
 {
@@ -8252,7 +8277,7 @@ nautilus_files_view_pop_up_selection_context_menu (NautilusFilesView *self,
     /* There's something related to NautilusFilesView that isn't grabbing the
      * focus back when the popover is closed. Let's force it as a workaround. */
     g_signal_connect_object (self->selection_menu, "closed",
-                             G_CALLBACK (gtk_widget_grab_focus), self,
+                             G_CALLBACK (restore_context_menu_focus), self,
                              G_CONNECT_SWAPPED);
     gtk_widget_set_parent (self->selection_menu, GTK_WIDGET (self));
     gtk_popover_set_has_arrow (GTK_POPOVER (self->selection_menu), FALSE);
@@ -8301,7 +8326,7 @@ nautilus_files_view_pop_up_background_context_menu (NautilusFilesView *self,
     /* There's something related to NautilusFilesView that isn't grabbing the
      * focus back when the popover is closed. Let's force it as a workaround. */
     g_signal_connect_object (self->background_menu, "closed",
-                             G_CALLBACK (gtk_widget_grab_focus), self,
+                             G_CALLBACK (restore_context_menu_focus), self,
                              G_CONNECT_SWAPPED);
     gtk_widget_set_parent (self->background_menu, GTK_WIDGET (self));
     gtk_popover_set_has_arrow (GTK_POPOVER (self->background_menu), FALSE);
