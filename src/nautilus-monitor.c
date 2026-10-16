@@ -27,14 +27,18 @@
 #include "nautilus-monitor.h"
 #include "nautilus-file-changes-queue.h"
 #include "nautilus-file-utilities.h"
+#include "nautilus-directory-private.h"
 
 #include <gio/gio.h>
 
 struct NautilusMonitor
 {
+    gatomicrefcount references;
     GFileMonitor *monitor;
     GVolumeMonitor *volume_monitor;
     GFile *location;
+    GCancellable *cancellable;
+    gboolean cancelled;
 };
 
 static gboolean call_consume_changes_idle_id = 0;
@@ -153,21 +157,69 @@ dir_changed (GFileMonitor      *monitor,
     schedule_call_consume_changes ();
 }
 
+static void
+monitor_unref (gpointer data)
+{
+    NautilusMonitor *monitor = data;
+    if (g_atomic_ref_count_dec (&monitor->references))
+    {
+        g_clear_object (&monitor->location);
+        g_clear_object (&monitor->cancellable);
+        g_slice_free (NautilusMonitor, monitor);
+    }
+}
+
+static void
+cancel_file_monitor (gpointer data)
+{
+    GFileMonitor *monitor = data;
+    g_file_monitor_cancel (monitor);
+    g_object_unref (monitor);
+}
+
+static void
+create_remote_monitor (GTask *task, gpointer source, gpointer data, GCancellable *cancellable)
+{
+    NautilusMonitor *monitor = data;
+    g_autoptr (GError) error = NULL;
+    GFileMonitor *result = g_file_monitor_directory (monitor->location,
+        G_FILE_MONITOR_WATCH_MOUNTS | G_FILE_MONITOR_WATCH_MOVES, cancellable, &error);
+
+    if (result != NULL)
+    {
+        g_task_return_pointer (task, result, cancel_file_monitor);
+    }
+    else if (error != NULL) { g_task_return_error (task, g_steal_pointer (&error)); }
+    else { g_task_return_pointer (task, NULL, NULL); }
+}
+
+static void
+remote_monitor_ready (GObject *source, GAsyncResult *result, gpointer data)
+{
+    NautilusMonitor *monitor = data;
+    GFileMonitor *file_monitor = g_task_propagate_pointer (G_TASK (result), NULL);
+    if (monitor->cancelled)
+    {
+        if (file_monitor != NULL) { cancel_file_monitor (file_monitor); }
+        return;
+    }
+    monitor->monitor = file_monitor;
+    if (file_monitor != NULL)
+    {
+        g_signal_connect (file_monitor, "changed", G_CALLBACK (dir_changed), monitor);
+        /* Enumeration can finish before remote watch setup. Reconcile once
+         * after connecting, so changes during that gap are not lost. */
+        g_autoptr (NautilusDirectory) directory = nautilus_directory_get_existing (monitor->location);
+        if (directory != NULL) { nautilus_directory_force_reload (directory); }
+    }
+}
+
 NautilusMonitor *
 nautilus_monitor_directory (GFile *location)
 {
-    GFileMonitor *dir_monitor;
-    NautilusMonitor *ret;
-
-    ret = g_slice_new0 (NautilusMonitor);
-    dir_monitor = g_file_monitor_directory (location,
-                                            G_FILE_MONITOR_WATCH_MOUNTS | G_FILE_MONITOR_WATCH_MOVES,
-                                            NULL, NULL);
-
-    if (dir_monitor != NULL)
-    {
-        ret->monitor = dir_monitor;
-    }
+    NautilusMonitor *ret = g_slice_new0 (NautilusMonitor);
+    g_atomic_ref_count_init (&ret->references);
+    ret->location = g_object_ref (location);
 
     /* Currently, some GVfs backends which support monitoring never emit
      * G_FILE_MONITOR_EVENT_UNMOUNTED, nor _DELETED events when the location
@@ -175,8 +227,19 @@ nautilus_monitor_directory (GFile *location)
      */
     if (!g_file_is_native (location))
     {
-        ret->location = g_object_ref (location);
         ret->volume_monitor = g_volume_monitor_get ();
+        ret->cancellable = g_cancellable_new ();
+        g_autoptr (GTask) task = g_task_new (NULL, ret->cancellable, remote_monitor_ready, ret);
+        g_atomic_ref_count_inc (&ret->references);
+        g_task_set_task_data (task, ret, monitor_unref);
+        /* Workers have no thread-default context: monitor events are queued
+         * on the application's global main context, as with native watches. */
+        g_task_run_in_thread (task, create_remote_monitor);
+    }
+    else
+    {
+        ret->monitor = g_file_monitor_directory (location,
+            G_FILE_MONITOR_WATCH_MOUNTS | G_FILE_MONITOR_WATCH_MOVES, NULL, NULL);
     }
 
     if (ret->monitor != NULL)
@@ -198,19 +261,19 @@ nautilus_monitor_directory (GFile *location)
 void
 nautilus_monitor_cancel (NautilusMonitor *monitor)
 {
+    monitor->cancelled = TRUE;
+    if (monitor->cancellable != NULL) { g_cancellable_cancel (monitor->cancellable); }
     if (monitor->monitor != NULL)
     {
         g_signal_handlers_disconnect_by_func (monitor->monitor, dir_changed, monitor);
-        g_file_monitor_cancel (monitor->monitor);
-        g_object_unref (monitor->monitor);
+        g_clear_pointer (&monitor->monitor, cancel_file_monitor);
     }
 
     if (monitor->volume_monitor != NULL)
     {
         g_signal_handlers_disconnect_by_func (monitor->volume_monitor, mount_removed, monitor);
-        g_object_unref (monitor->volume_monitor);
+        g_clear_object (&monitor->volume_monitor);
     }
 
-    g_clear_object (&monitor->location);
-    g_slice_free (NautilusMonitor, monitor);
+    monitor_unref (monitor);
 }

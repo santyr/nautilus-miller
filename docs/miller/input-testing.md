@@ -50,3 +50,20 @@ python3 tools/miller/with-test-session.py -- meson test -C build-miller test-mil
 ```
 
 This executable includes strip snapshot tests and native-window Back/Forward, view/search and tab integration. Its `keys-entry` case delivers actual Alt+Left/Right and Ctrl+L through the guarded private compositor, then verifies endpoint, action directory and retained location-entry focus. Other cases invoke native actions/APIs directly and assert directory identities, selections and GTK adjustments; they are not additional genuine-input coverage. Intentionally delayed enumeration, other navigation entry points, real remote services and accessibility remain separate acceptance requirements.
+
+## Intentionally delayed GVfs backend
+
+Requires `gvfs-archive`, Python GI/GIO and Linux PIDfds, alongside the private compositor dependencies:
+
+```sh
+python3 test/miller/test-delayed-backend.py
+python3 tools/miller/with-test-session.py -- python3 tools/miller/with-delayed-backend.py -- meson test -C build-miller test-miller-state --test-args '-p /miller/history/delayed' --print-errorlogs
+```
+
+The helper mounts its own read-only ZIP with A/a.txt and B/b.txt in the disposable session. It obtains the actual canonical root from `GMount`; it does not guess GVfs's escaping. It requires the exact private metadata, current owned headless compositor and XDG tree. Only an archive backend with the current UID, exact executable and matching private bus can supply its retained PIDfd. Children send bounded pause/resume requests to a private600-mode Unix socket; no request can select a PID. The parent resumes before unmounting, handles failed children and termination, and reaps its own child. Cleanup still resumes the authorized process if a child corrupts the marker. A five-second pause deadline resumes the backend and makes the entire run fail, so it cannot manufacture a responsiveness pass.
+
+Nine Python cases cover these guards, actual enumeration held pending and then completed, fragmented/rejected requests, child failure, changed metadata, the pause deadline and termination cleanup. Four GTK cases cover real-key A→B replacement, navigation away, closing a genuinely loading tab, and monitor-creation latency/cancellation. Normal Meson runs explicitly skip these four when the backend fixture is absent. The external command above establishes the delayed-backend evidence. This read-only archive is not SFTP/SMB, authentication, reconnect, live remote monitoring or a performance benchmark.
+
+## External IME observation after history integration
+
+At5c875390a, one extra Anthy run failed on `IBUS_ATTR_TYPE_HINT should not happen` in the installed IBus GTK module; unchanged-code GDB and normal reruns passed. See `/tmp/nautilus-finder-history-anthy{,-backtrace,-repeat}.log`. The [IBus1.5.34 GTK source](https://github.com/ibus/ibus/blob/1.5.34/client/gtk2/ibusimcontext.c) contains that warning, and its [input-context source](https://github.com/ibus/ibus/blob/1.5.34/src/ibusinputcontext.c) forwards synchronous post-process preedit without the conversion used in its asynchronous path. That is a candidate provider cause, not a proven complete diagnosis or fix. The intermittent result remains open for expanded IME acceptance. No warnings were suppressed and no installed provider library was changed. The actual dconf restart check passed with writer100664/reader100913 in `/tmp/nautilus-finder-history-restart.log`.
