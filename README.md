@@ -1,46 +1,30 @@
 # Nautilus Miller
 
-This fork adds Finder-style Miller columns alongside Grid and List. See the
-[Miller build, install, and rollback guide](README.miller.md) and the
-[host verification record](docs/miller/verification.md).
+Nautilus Miller is **Sat’s personal project**, an independently maintained fork of GNOME Nautilus with Finder-style Miller columns alongside Grid and List. It is not an official GNOME release. Development currently targets Fedora 44 and GNOME/Wayland, based on Nautilus 50.4.
 
-## Upstream Nautilus
-[![Pipeline status](https://gitlab.gnome.org/GNOME/nautilus/badges/main/pipeline.svg)](https://gitlab.gnome.org/GNOME/nautilus/commits/main)
-[![coverage report](https://gitlab.gnome.org/GNOME/nautilus/badges/main/coverage.svg)](https://gitlab.gnome.org/GNOME/nautilus/commits/main) 
+- [Build, run, install and roll back](README.miller.md)
+- [Current completion scope](docs/miller/finder-completion-goal.md)
+- [Feature and acceptance status](docs/miller/acceptance.md)
+- [Extension compatibility](docs/miller/extension-compatibility.md)
 
-This is the project of the [Files](https://apps.gnome.org/Nautilus/) app, a file browser for
-GNOME, internally known by its historical name `nautilus`.
+## Support, bug reports and feature requests
 
-## Supported version
-Only the latest version of Files as provided upstream is supported. Try out the [Flatpak nightly](https://welcome.gnome.org/en/app/Nautilus/#installing-a-nightly-build) installation before filling issues to ensure the installation is reproducible and doesn't have downstream changes on it. In case you cannot reproduce in the nightly installation, don't hesitate to file an issue in your distribution. This is to ensure the issue is well triaged and reaches the proper people.
+Use the [Nautilus Miller GitHub issue tracker](https://github.com/santyr/nautilus-miller/issues) for questions, bugs and feature requests about this fork. Include the fork revision or RPM version, Fedora/GNOME versions, reproduction steps and relevant logs with private information removed. Development and support are provided on a personal, best-effort basis.
+
+Please keep reports about Miller columns and other fork changes in this repository. GNOME’s issue tracker, Discourse and design channels are not support channels for this project. Any upstream report should concern a problem independently reproduced in unmodified upstream Nautilus.
 
 ## Runtime dependencies
-- [Bubblewrap](https://github.com/containers/bubblewrap) installed. Used for security reasons.
-- [LocalSearch](https://gitlab.gnome.org/GNOME/localsearch) properly set up and with all features enabled. Used for fast search and metadata extraction, starred files and batch renaming.
-- [xdg-user-dirs-gtk](https://gitlab.gnome.org/GNOME/xdg-user-dirs-gtk) installed.  Used to create the default bookmarks and update localization.
 
-## Discourse
+Build dependencies and installation commands are documented in the [Miller guide](README.miller.md). Inherited runtime components include:
 
-For more informal discussion we use [GNOME Discourse](https://discourse.gnome.org/tags/nautilus) in the Applications category with the `nautilus` tag. Feel free to open a topic there.
+- [Bubblewrap](https://github.com/containers/bubblewrap), used for process isolation.
+- [LocalSearch](https://gitlab.gnome.org/GNOME/localsearch), used for search, metadata extraction, starred files and batch renaming.
+- [xdg-user-dirs-gtk](https://gitlab.gnome.org/GNOME/xdg-user-dirs-gtk), used for default bookmarks and localization.
 
 ## Extensions
 
-Documentation for the libnautilus-extension API is available [here](https://gnome.pages.gitlab.gnome.org/nautilus/).  Also, if you are interested in developing a Nautilus extension in Python you should refer to the [nautilus-python](https://gnome.pages.gitlab.gnome.org/nautilus-python/) documentation.
+The fork retains the native Nautilus extension interfaces. See our [compatibility status and test requirements](docs/miller/extension-compatibility.md). Upstream technical references are available for [libnautilus-extension](https://gnome.pages.gitlab.gnome.org/nautilus/) and [nautilus-python](https://gnome.pages.gitlab.gnome.org/nautilus-python/).
 
-## How to report issues
+## Upstream attribution and license
 
-Report issues to the GNOME [issue tracking system](https://gitlab.gnome.org/GNOME/nautilus/issues).
-
-## Feature requests
-
-Files is a core compoment of the GNOME desktop experience. As such, any changes in behavior or appearance only happen in accordance with the [GNOME design team][design-team].
-
-For major changes, it is best to start a discussion on [discourse] and reach out on the [#gnome-design matrix room][design-room], and only involve the issue tracker once agreement has been reached.
-
-In particular mockups must be approved by the design team to be considered for implementation.
-
-For enhancements that are limited in scope and well-defined, it is acceptable to directly open an issue using the shortcoming template.
-
-[design-team]: https://gitlab.gnome.org/Teams/Design
-[discourse]: https://discourse.gnome.org/tag/nautilus
-[design-room]: https://matrix.to/#/#gnome-design:gnome.org
+This project is derived from [GNOME Nautilus / Files](https://gitlab.gnome.org/GNOME/nautilus), initially release 50.4. The original authors’ copyright notices and GPL licensing remain in place; see [COPYING](COPYING). Upstream source and API links are provided for attribution and technical reference. This repository’s builds, changes and support belong to the Nautilus Miller personal project.

@@ -1,6 +1,6 @@
 # Nautilus Miller
 
-A fork of GNOME Nautilus 50.4 with Finder-style Miller columns alongside Grid and List.
+Sat’s personal project: an independently maintained fork of GNOME Nautilus 50.4 with Finder-style Miller columns alongside Grid and List. This is not an official GNOME release. Questions, bugs and feature requests belong in the [Nautilus Miller GitHub issue tracker](https://github.com/santyr/nautilus-miller/issues); support is personal and best effort. See the [project README](README.md) for scope and attribution.
 
 Select **Columns View** from View Options, or press **Ctrl+3**. Selecting a folder reveals its contents in the next column while keeping focus in the parent. Right enters the selected folder; Left returns to the previous column. Ancestor selections stay highlighted, each column scrolls vertically, and separators can be dragged to resize columns. Normal Nautilus file activation and operation shortcuts apply.
 
