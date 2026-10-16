@@ -8,9 +8,11 @@ The initial upstream commit is `87bba3cbe6aa2b13a08aebe1330d61c967b1f6d0`, relea
 
 ## User experience
 
+OS X Finder's column view is the interaction reference, as clarified by the user when approving this design. Selecting a folder reveals its children without moving keyboard focus away from the selected row. Ancestor branch selections stay highlighted when focus moves right. A single selection of a regular file does not launch it. Preserve Nautilus's platform keyboard shortcuts for activation and file operations.
+
 The view selector offers Grid, List, and Columns. The selected view can be remembered within the fork, without storing the new enum value in system Nautilus's settings. Switching views preserves the current location and any selection that exists at that location.
 
-Columns display directory contents as compact lists with file icons, names, and folder indicators. Each column scrolls vertically; the whole strip scrolls horizontally. Columns have a usable minimum width, and the newest column is brought into view. The first version uses a consistent column width rather than adding a width editor.
+Columns display directory contents as compact lists with file icons, names, and folder indicators. Each column scrolls vertically; the whole strip scrolls horizontally. Columns have a usable minimum width, and the newest column is brought into view. Provide draggable column separators, with widths retained for surviving columns during a session, to support Finder-style navigation of long filenames.
 
 Opening a location directly builds its ancestor chain up to the GIO root, highlights the corresponding child in each ancestor column, and displays the requested location's contents at the right. Ancestors load asynchronously. Remote URI roots remain within their own URI hierarchy; there is no traversal across unrelated mounts or URI schemes.
 
@@ -25,6 +27,8 @@ The location bar and navigation history track the opened directory at the end of
 Nautilus 50.4 has a final `NautilusFilesView` that owns a directory, a `NautilusViewModel`, file actions, and one `NautilusListBase` presentation. Grid and list presentations derive from `NautilusListBase`. A Miller strip introduces several displayed directories, so its implementation must explicitly coordinate displayed columns with the existing single active action context.
 
 Introduce a Miller presentation and a small column controller. The strip owns the ordered directory chain, column widgets, focus transitions, and horizontal scrolling. Each column owns its directory identity, loading state, list model, selection, and directory-monitor lifetime. Keep branch reconciliation separate from row rendering so path changes and delayed completion can be reasoned about independently.
+
+Implement this ownership by composing one `NautilusFilesView` per column, with a compact `NautilusListBase` presentation. The strip controller is hosted by the window slot. The slot exposes the focused column as its active file-action context and tracks the branch endpoint independently for its location and history. This preserves the existing directory loading, model, file actions, and monitoring in each column, rather than making one directory model represent unrelated columns.
 
 Use Nautilus's directory and file objects for enumeration, metadata, sorting, filtering, monitoring, and file identity. Reuse existing row cells and list interaction code where their assumptions fit. Extend the view adapter only where needed to expose the focused column's model, selection, and backing directory to the existing file actions. Do not silently treat the rightmost directory as the destination for operations invoked in another column.
 
@@ -50,7 +54,7 @@ After functional verification, install the replacement package and select its de
 
 Document how to restore Fedora's Nautilus package and its previous default folder handler. Keep the original handler value and package version as deployment records. Rebuild the fork against later Fedora/upstream updates as a documented maintenance task.
 
-The host already has Git, GCC, Ninja, DNF's builddep plugin, and Nautilus 50.4. Meson and the GTK/libadwaita development packages are absent. The user requested setup commands rather than an unreviewed system package installation. Supply these Fedora commands:
+The host has Git, GCC, Ninja, DNF's builddep plugin, and Nautilus 50.4. The user has now installed Meson and the development packages: GTK 4.22.5, libadwaita 1.9.4, GLib 2.88.4, and Blueprint 0.20.4 satisfy the checked 50.4 source requirements. For reproducing the setup, supply these Fedora commands:
 
 ```bash
 sudo dnf builddep nautilus
