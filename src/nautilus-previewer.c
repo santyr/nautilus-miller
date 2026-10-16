@@ -42,16 +42,20 @@
 #define PREVIEWER_DBUS_NAME "org.gnome.NautilusPreviewer"
 #define PREVIEWER_DBUS_PATH "/org/gnome/NautilusPreviewer"
 
-static const char *previewer_dbus_name = PREVIEWER_DBUS_NAME PROFILE;
-static const char *previewer_dbus_path = PREVIEWER_DBUS_PATH PROFILE;
-static gboolean tried_alternative_previewer_dbus_name = FALSE;
-
-static gboolean previewer_ready = FALSE;
-static gboolean fetching_bus = FALSE;
-static GDBusProxy *previewer_proxy = NULL;
-static guint subscription_id = 0;
-
-static GCancellable *cancellable = NULL;
+/* Discovery belongs to this application instance. Delayed callbacks carry a
+ * generation so teardown/restart cannot publish an obsolete proxy. */
+static GStrv previewer_names = NULL;
+static guint previewer_index;
+static guint64 discovery_generation;
+static gint64 retry_after;
+static gboolean initialized;
+static gboolean previewer_ready;
+static gboolean fetching_bus;
+static GDBusConnection *previewer_connection;
+static GDBusProxy *previewer_proxy;
+static guint subscription_id;
+static guint owner_subscription_id;
+static GCancellable *cancellable;
 
 static NautilusWindowSlot *current_slot = NULL; /* weak ref */
 static GtkRoot *current_window = NULL; /* weak ref */
@@ -61,7 +65,7 @@ static void real_call_show_file (const gchar *uri,
                                  const gchar *window_handle,
                                  gboolean     close_if_already_visible,
                                  const char  *activation_token);
-static void create_new_bus (void);
+static void create_new_proxy (void);
 static void previewer_selection_event (GDBusConnection *connection,
                                        const gchar     *sender_name,
                                        const gchar     *object_path,
@@ -127,118 +131,195 @@ clear_exported_window_handle (void)
     exported_window_handle = NULL;
 }
 
-static void
-switch_to_alternative_previewer_dbus_name (void)
+typedef struct
 {
-    tried_alternative_previewer_dbus_name = TRUE;
+    guint64 generation;
+    guint index;
+} DiscoveryCall;
 
-    if (g_str_has_suffix (previewer_dbus_name, "Devel"))
-    {
-        previewer_dbus_name = PREVIEWER_DBUS_NAME;
-        previewer_dbus_path = PREVIEWER_DBUS_PATH;
-    }
-    else
-    {
-        previewer_dbus_name = PREVIEWER_DBUS_NAME "Devel";
-        previewer_dbus_path = PREVIEWER_DBUS_PATH "Devel";
-    }
+static DiscoveryCall *
+discovery_call_new (void)
+{
+    DiscoveryCall *call = g_new0 (DiscoveryCall, 1);
+    call->generation = discovery_generation;
+    call->index = previewer_index;
+    return call;
+}
+
+static gboolean
+call_is_current (DiscoveryCall *call)
+{
+    return initialized && call->generation == discovery_generation &&
+           call->index == previewer_index;
 }
 
 static void
-on_ping_finished (GObject      *object,
-                  GAsyncResult *res,
-                  gpointer      user_data)
+clear_proxy (void)
 {
-    g_autoptr (GError) error = NULL;
-    g_autoptr (GVariant) variant = g_dbus_proxy_call_finish (G_DBUS_PROXY (object), res, &error);
-
-    if (error == NULL)
+    previewer_ready = FALSE;
+    if (subscription_id != 0)
     {
-        GDBusConnection *connection = g_dbus_proxy_get_connection (previewer_proxy);
-
-        previewer_ready = TRUE;
-        fetching_bus = FALSE;
-        subscription_id = g_dbus_connection_signal_subscribe (connection,
-                                                              previewer_dbus_name,
-                                                              PREVIEWER2_DBUS_IFACE,
-                                                              "SelectionEvent",
-                                                              previewer_dbus_path,
-                                                              NULL,
-                                                              G_DBUS_SIGNAL_FLAGS_NONE,
-                                                              previewer_selection_event,
-                                                              NULL,
-                                                              NULL);
+        g_dbus_connection_signal_unsubscribe (previewer_connection, subscription_id);
+        subscription_id = 0;
     }
-    else if (!tried_alternative_previewer_dbus_name)
-    {
-        switch_to_alternative_previewer_dbus_name ();
-        create_new_bus ();
-    }
-    else
-    {
-        fetching_bus = FALSE;
-        g_debug ("Unable to create NautilusPreviewer2 proxy: %s", error->message);
-    }
-}
-
-static void
-on_bus_ready (GObject      *object,
-              GAsyncResult *res,
-              gpointer      user_data)
-{
-    g_autoptr (GError) error = NULL;
-
     g_clear_object (&previewer_proxy);
-    previewer_proxy = g_dbus_proxy_new_for_bus_finish (res, &error);
+}
 
-    if (error == NULL)
+static void
+next_provider (void)
+{
+    previewer_index++;
+    if (previewer_names[previewer_index] != NULL)
     {
-        g_dbus_proxy_call (previewer_proxy,
-                           "org.freedesktop.DBus.Peer.Ping", NULL,
-                           G_DBUS_CALL_FLAGS_NONE, G_MAXINT,
-                           cancellable, on_ping_finished, NULL);
-    }
-    else if (!tried_alternative_previewer_dbus_name)
-    {
-        switch_to_alternative_previewer_dbus_name ();
-        create_new_bus ();
+        create_new_proxy ();
     }
     else
     {
         fetching_bus = FALSE;
-        g_debug ("Unable to create NautilusPreviewer2 proxy: %s", error->message);
+        /* Missing providers must be retryable, without a render-loop retry
+         * storm from is_visible(). Name-owner changes bypass this cooldown. */
+        retry_after = g_get_monotonic_time () + G_TIME_SPAN_SECOND;
     }
 }
 
 static void
-create_new_bus (void)
+on_ping_finished (GObject *object, GAsyncResult *res, gpointer user_data)
 {
-    g_dbus_proxy_new_for_bus (G_BUS_TYPE_SESSION,
-                              G_DBUS_PROXY_FLAGS_DO_NOT_AUTO_START_AT_CONSTRUCTION,
-                              NULL,
-                              previewer_dbus_name,
-                              previewer_dbus_path,
-                              PREVIEWER2_DBUS_IFACE,
-                              cancellable,
-                              on_bus_ready,
-                              NULL);
+    g_autofree DiscoveryCall *call = user_data;
+    g_autoptr (GError) error = NULL;
+    g_autoptr (GVariant) reply = g_dbus_proxy_call_finish (G_DBUS_PROXY (object), res, &error);
+    if (!call_is_current (call)) { return; }
+    if (error != NULL)
+    {
+        next_provider ();
+        return;
+    }
+    g_set_object (&previewer_proxy, G_DBUS_PROXY (object));
+    previewer_ready = TRUE;
+    fetching_bus = FALSE;
+    subscription_id = g_dbus_connection_signal_subscribe (
+        previewer_connection, g_dbus_proxy_get_name (previewer_proxy),
+        PREVIEWER2_DBUS_IFACE, "SelectionEvent",
+        g_dbus_proxy_get_object_path (previewer_proxy), NULL,
+        G_DBUS_SIGNAL_FLAGS_NONE, previewer_selection_event, NULL, NULL);
+}
+
+static void
+on_proxy_ready (GObject *object, GAsyncResult *res, gpointer user_data)
+{
+    g_autofree DiscoveryCall *call = user_data;
+    g_autoptr (GError) error = NULL;
+    g_autoptr (GDBusProxy) proxy = g_dbus_proxy_new_finish (res, &error);
+    if (!call_is_current (call)) { return; }
+    if (proxy == NULL)
+    {
+        next_provider ();
+        return;
+    }
+    g_dbus_proxy_call (proxy, "org.freedesktop.DBus.Peer.Ping", NULL,
+                       G_DBUS_CALL_FLAGS_NONE, 1500, cancellable,
+                       on_ping_finished, discovery_call_new ());
+}
+
+static void
+create_new_proxy (void)
+{
+    const char *name = previewer_names[previewer_index];
+    g_autofree char *path = g_strconcat (PREVIEWER_DBUS_PATH, name + strlen (PREVIEWER_DBUS_NAME), NULL);
+    g_dbus_proxy_new (previewer_connection,
+                      G_DBUS_PROXY_FLAGS_DO_NOT_AUTO_START_AT_CONSTRUCTION,
+                      NULL, name, path, PREVIEWER2_DBUS_IFACE, cancellable,
+                      on_proxy_ready, discovery_call_new ());
+}
+
+static void
+restart_discovery (void)
+{
+    discovery_generation++;
+    g_cancellable_cancel (cancellable);
+    g_clear_object (&cancellable);
+    cancellable = g_cancellable_new ();
+    clear_proxy ();
+    previewer_index = 0;
+    retry_after = 0;
+    fetching_bus = TRUE;
+    create_new_proxy ();
+}
+
+static void
+name_owner_changed (GDBusConnection *connection, const char *sender,
+                    const char *path, const char *interface, const char *signal,
+                    GVariant *parameters, gpointer data)
+{
+    const char *name, *old_owner, *new_owner;
+    g_variant_get (parameters, "(&s&s&s)", &name, &old_owner, &new_owner);
+    if (!initialized || !g_strv_contains ((const char * const *) previewer_names, name)) { return; }
+    if ((previewer_ready && g_str_equal (name, g_dbus_proxy_get_name (previewer_proxy))) ||
+        (!previewer_ready && new_owner[0] != '\0'))
+    {
+        restart_discovery ();
+    }
+}
+
+static void
+set_profile (const char *profile)
+{
+    g_autoptr (GPtrArray) names = g_ptr_array_new_with_free_func (g_free);
+    if (profile[0] != '\0')
+    {
+        g_ptr_array_add (names, g_strconcat (PREVIEWER_DBUS_NAME, profile, NULL));
+    }
+    g_ptr_array_add (names, g_strdup (PREVIEWER_DBUS_NAME));
+    if (!g_str_equal (profile, "Devel"))
+    {
+        g_ptr_array_add (names, g_strdup (PREVIEWER_DBUS_NAME "Devel"));
+    }
+    g_ptr_array_add (names, NULL);
+    previewer_names = (GStrv) g_ptr_array_free (g_steal_pointer (&names), FALSE);
+}
+
+static void
+watch_providers (void)
+{
+    owner_subscription_id = g_dbus_connection_signal_subscribe (
+        previewer_connection, "org.freedesktop.DBus", "org.freedesktop.DBus",
+        "NameOwnerChanged", "/org/freedesktop/DBus", NULL,
+        G_DBUS_SIGNAL_FLAGS_NONE, name_owner_changed, NULL, NULL);
+}
+
+static void
+on_connection_ready (GObject *object, GAsyncResult *res, gpointer user_data)
+{
+    g_autofree DiscoveryCall *call = user_data;
+    g_autoptr (GError) error = NULL;
+    g_autoptr (GDBusConnection) connection = g_bus_get_finish (res, &error);
+    if (!call_is_current (call)) { return; }
+    fetching_bus = FALSE;
+    if (connection == NULL)
+    {
+        retry_after = g_get_monotonic_time () + G_TIME_SPAN_SECOND;
+        return;
+    }
+    g_set_object (&previewer_connection, connection);
+    watch_providers ();
+    restart_discovery ();
 }
 
 static gboolean
 ensure_previewer_proxy (void)
 {
-    if (previewer_ready)
+    if (!initialized) { return FALSE; }
+    if (previewer_ready) { return TRUE; }
+    if (fetching_bus || g_get_monotonic_time () < retry_after) { return FALSE; }
+    if (previewer_connection != NULL)
     {
-        return TRUE;
+        restart_discovery ();
     }
-    if (fetching_bus)
+    else
     {
-        return FALSE;
+        fetching_bus = TRUE;
+        g_bus_get (G_BUS_TYPE_SESSION, cancellable, on_connection_ready, discovery_call_new ());
     }
-
-    fetching_bus = TRUE;
-
-    create_new_bus ();
     return FALSE;
 }
 
@@ -401,22 +482,46 @@ previewer_selection_event (GDBusConnection *connection,
 }
 
 void
+nautilus_previewer_setup_for_connection (GDBusConnection *connection, const char *profile)
+{
+    g_return_if_fail (G_IS_DBUS_CONNECTION (connection));
+    g_return_if_fail (profile != NULL);
+    nautilus_previewer_teardown (NULL);
+    initialized = TRUE;
+    set_profile (profile);
+    previewer_connection = g_object_ref (connection);
+    watch_providers ();
+    restart_discovery ();
+}
+
+void
 nautilus_previewer_setup (void)
 {
+    if (initialized) { return; }
+    initialized = TRUE;
+    set_profile (PROFILE);
+    cancellable = g_cancellable_new ();
     ensure_previewer_proxy ();
 }
 
 void
 nautilus_previewer_teardown (GDBusConnection *connection)
 {
-    if (subscription_id != 0)
-    {
-        g_dbus_connection_signal_unsubscribe (connection, subscription_id);
-    }
-
+    initialized = FALSE;
+    discovery_generation++;
     g_cancellable_cancel (cancellable);
+    clear_proxy ();
+    if (owner_subscription_id != 0)
+    {
+        g_dbus_connection_signal_unsubscribe (previewer_connection, owner_subscription_id);
+        owner_subscription_id = 0;
+    }
     g_clear_object (&cancellable);
-    g_clear_object (&previewer_proxy);
+    g_clear_object (&previewer_connection);
+    g_clear_pointer (&previewer_names, g_strfreev);
+    fetching_bus = FALSE;
+    previewer_index = 0;
+    retry_after = 0;
     clear_exported_window_handle ();
     g_clear_weak_pointer (&current_window);
     g_clear_weak_pointer (&current_slot);

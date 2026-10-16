@@ -38,6 +38,9 @@ void nautilus_previewer_call_close     (void);
 gboolean nautilus_previewer_is_visible (void);
 
 void  nautilus_previewer_setup         (void);
+/* Internal dependency injection for private-bus discovery tests. */
+void  nautilus_previewer_setup_for_connection (GDBusConnection *connection,
+                                               const char *profile);
 void  nautilus_previewer_teardown      (GDBusConnection *connection);
 
 G_END_DECLS
