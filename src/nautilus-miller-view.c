@@ -27,6 +27,7 @@ typedef struct
     GtkWidget *reset_button;
     GtkWidget *default_button;
     guint selection_idle;
+    guint64 selection_scroll_generation;
     int width;
     int drag_width;
     gboolean stopped;
@@ -49,12 +50,13 @@ struct _NautilusMillerView
     guint scroll_frames;
     guint reveal_primary;
     guint reveal_secondary;
+    guint64 scroll_generation;
 };
 G_DEFINE_TYPE (NautilusMillerView, nautilus_miller_view, ADW_TYPE_BIN)
 enum { ACTIVE_VIEW_CHANGED, LOCATION_REQUESTED, LAST_SIGNAL };
 static guint signals[LAST_SIGNAL];
 
-static void reconcile (NautilusMillerView *self, GFile *location, NautilusFileList *selection, gboolean preserve_focus);
+static void reconcile (NautilusMillerView *self, GFile *location, NautilusFileList *selection, gboolean preserve_focus, gboolean reveal);
 
 static MillerColumn *
 find_column (NautilusMillerView *self, NautilusFilesView *view, guint *position)
@@ -153,22 +155,24 @@ schedule_reveal (NautilusMillerView *self, guint primary, guint secondary)
 static void
 manual_scroll_pressed (GtkGestureClick *gesture, int presses, double x, double y, NautilusMillerView *self)
 {
+    self->scroll_generation++;
     cancel_reveal (self);
 }
 
 static gboolean
 manual_scroll (GtkEventControllerScroll *controller, double x, double y, NautilusMillerView *self)
 {
+    self->scroll_generation++;
     cancel_reveal (self);
     return FALSE;
 }
 
 static void
-request_location (NautilusMillerView *self, GFile *location, gboolean preserve_focus)
+request_location (NautilusMillerView *self, GFile *location, gboolean preserve_focus, gboolean reveal)
 {
     g_autoptr (GFile) target = g_object_ref (location);
     g_set_object (&self->user_location, target);
-    reconcile (self, target, NULL, preserve_focus);
+    reconcile (self, target, NULL, preserve_focus, reveal);
     g_signal_emit (self, signals[LOCATION_REQUESTED], 0, target);
 }
 
@@ -193,8 +197,20 @@ selection_idle (gpointer data)
         location = g_object_ref (column->location);
     }
     set_active_view (self, column->view);
-    request_location (self, location, TRUE);
+    request_location (self, location, TRUE, column->selection_scroll_generation == self->scroll_generation);
     return G_SOURCE_REMOVE;
+}
+
+static void
+selection_model_changed (GtkSelectionModel *model, guint position, guint count, MillerColumn *column)
+{
+    /* FilesView coalesces notifications through its own idle before our idle.
+     * Capture the reveal identity at the original model change, so a scroll
+     * between either pair of callbacks invalidates only the older reveal. */
+    if (!column->owner->reconciling && !nautilus_files_view_is_selection_auto (column->view))
+    {
+        column->selection_scroll_generation = column->owner->scroll_generation;
+    }
 }
 
 static void
@@ -232,7 +248,7 @@ activate_directory (NautilusFilesView *view, NautilusFile *file, MillerColumn *c
     NautilusMillerView *self = column->owner;
     g_autoptr (GFile) location = nautilus_file_get_activation_location (file);
     g_clear_handle_id (&column->selection_idle, g_source_remove);
-    request_location (self, location, FALSE);
+    request_location (self, location, FALSE, TRUE);
     gtk_widget_grab_focus (GTK_WIDGET (self->active_view));
     return TRUE;
 }
@@ -433,6 +449,7 @@ column_free (gpointer data)
     MillerColumn *column = data;
     g_clear_handle_id (&column->selection_idle, g_source_remove);
     g_signal_handlers_disconnect_by_data (column->view, column);
+    g_signal_handlers_disconnect_by_data (nautilus_files_view_get_private_model (column->view), column);
     disconnect_column_controllers (GTK_WIDGET (column->view), column);
     disconnect_column_controllers (column->grip, column);
     g_signal_handlers_disconnect_by_data (column->width_spin, column);
@@ -546,6 +563,8 @@ column_new (NautilusMillerView *self, GFile *location)
     g_signal_connect_after (column->view, "end-loading", G_CALLBACK (column_end_loading), column);
     g_signal_connect (column->view, "notify::loading", G_CALLBACK (column_loading_changed), column);
     g_signal_connect (column->view, "selection-changed", G_CALLBACK (selection_changed), column);
+    g_signal_connect (nautilus_files_view_get_private_model (column->view), "selection-changed",
+                      G_CALLBACK (selection_model_changed), column);
     g_signal_connect (column->view, "column-activate-directory", G_CALLBACK (activate_directory), column);
     gtk_box_append (self->strip, column->box);
     gtk_box_append (self->strip, column->grip);
@@ -553,7 +572,7 @@ column_new (NautilusMillerView *self, GFile *location)
 }
 
 static void
-reconcile (NautilusMillerView *self, GFile *location, NautilusFileList *selection, gboolean preserve_focus)
+reconcile (NautilusMillerView *self, GFile *location, NautilusFileList *selection, gboolean preserve_focus, gboolean reveal)
 {
     self->reconciling = TRUE;
     GFile *previous_location = nautilus_miller_view_get_location (self);
@@ -599,7 +618,7 @@ reconcile (NautilusMillerView *self, GFile *location, NautilusFileList *selectio
     }
     self->reconciling = FALSE;
     g_object_notify (G_OBJECT (self), "loading");
-    if (changed || !preserve_focus)
+    if (reveal && (changed || !preserve_focus))
     {
         if (find_column (self, self->active_view, &active_index) != NULL)
         {
@@ -613,7 +632,7 @@ nautilus_miller_view_set_location (NautilusMillerView *self, GFile *location, Na
 {
     gboolean preserve = self->user_location != NULL && g_file_equal (self->user_location, location);
     g_clear_object (&self->user_location);
-    reconcile (self, location, selection, preserve);
+    reconcile (self, location, selection, preserve, TRUE);
 }
 
 NautilusFilesView *nautilus_miller_view_get_active_view (NautilusMillerView *self) { return self->active_view; }

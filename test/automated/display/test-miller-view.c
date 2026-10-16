@@ -547,7 +547,9 @@ test_minimal_reveal (void)
     g_autoptr (GFile) root = g_file_new_for_path (test_get_tmp_dir ());
     g_autoptr (GFile) parent = g_file_resolve_relative_path (root, "one/two/three/four");
     g_autoptr (GFile) child = g_file_get_child (parent, "wide-child");
+    g_autoptr (GFile) queued_child = g_file_get_child (parent, "queued-child");
     g_assert_true (g_file_make_directory_with_parents (child, NULL, NULL));
+    g_assert_true (g_file_make_directory (queued_child, NULL, NULL));
     nautilus_miller_width_set (nautilus_preferences, child, 1100);
     g_autoptr (NautilusWindowSlot) slot = nautilus_window_slot_new (NAUTILUS_MODE_BROWSE);
     g_autoptr (NautilusMillerView) strip = g_object_ref_sink (nautilus_miller_view_new (slot));
@@ -620,6 +622,55 @@ test_minimal_reveal (void)
     wait_frame (window);
     wait_frame (window);
     g_assert_cmpfloat (gtk_adjustment_get_value (adjustment), ==, before);
+
+    /* Cancel an older selection's future reveal before its idle reaches the
+     * frame scheduler; disclosure must still complete after the scroll. */
+    select_path (parent_view, queued_child, FALSE);
+    g_signal_emit_by_name (parent_view, "selection-changed");
+    for (guint i = 0; i < g_list_model_get_n_items (scroll_controllers); i++)
+    {
+        g_autoptr (GtkEventController) controller = g_list_model_get_item (scroll_controllers, i);
+        if (GTK_IS_EVENT_CONTROLLER_SCROLL (controller) &&
+            gtk_event_controller_get_propagation_phase (controller) == GTK_PHASE_CAPTURE)
+        {
+            gboolean handled = FALSE;
+            g_signal_emit_by_name (controller, "scroll", 1.0, 0.0, &handled);
+        }
+    }
+    gtk_adjustment_set_value (adjustment, 0);
+    settle (strip);
+    wait_frame (window);
+    wait_frame (window);
+    wait_frame (window);
+    g_assert_true (g_file_equal (nautilus_miller_view_get_location (strip), queued_child));
+    g_test_message ("Manual scroll after selection is queued must cancel that selection's future reveal");
+    g_assert_cmpfloat (gtk_adjustment_get_value (adjustment), ==, 0);
+    /* Begin the next selection with its row visible, as a pointer selection
+     * would. Selecting an offscreen row through FilesView's reveal API also
+     * asks GTK itself to animate focus scrolling, outside this strip tick. */
+    gtk_adjustment_set_value (adjustment, before);
+    wait_frame (window);
+    wait_frame (window);
+    select_path (parent_view, child, FALSE);
+    /* Also cover the earlier gap before FilesView's coalesced notification:
+     * no explicit strip signal, only the synchronous selection model change. */
+    for (guint i = 0; i < g_list_model_get_n_items (scroll_controllers); i++)
+    {
+        g_autoptr (GtkEventController) controller = g_list_model_get_item (scroll_controllers, i);
+        if (GTK_IS_EVENT_CONTROLLER_SCROLL (controller) &&
+            gtk_event_controller_get_propagation_phase (controller) == GTK_PHASE_CAPTURE)
+        {
+            gboolean handled = FALSE;
+            g_signal_emit_by_name (controller, "scroll", 1.0, 0.0, &handled);
+        }
+    }
+    gtk_adjustment_set_value (adjustment, 0);
+    settle (strip);
+    wait_frame (window);
+    wait_frame (window);
+    wait_frame (window);
+    g_assert_true (g_file_equal (nautilus_miller_view_get_location (strip), child));
+    g_assert_cmpfloat (gtk_adjustment_get_value (adjustment), ==, 0);
 
     gtk_widget_set_default_direction (GTK_TEXT_DIR_RTL);
     g_assert_true (send_arrow (parent_view, GDK_KEY_Left));
