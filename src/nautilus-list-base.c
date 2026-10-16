@@ -933,7 +933,7 @@ setup_cell_hover (NautilusViewCell *cell)
     real_setup_cell_hover (cell, GTK_WIDGET (cell));
 }
 
-static void
+void
 nautilus_list_base_scroll_to_item (NautilusListBase *self,
                                    guint             position)
 {

@@ -64,6 +64,9 @@ void nautilus_list_base_set_cursor (NautilusListBase *self,
                                     guint             position,
                                     gboolean          select,
                                     gboolean          scroll_to);
+/* Reveal an item without changing focus or selection. */
+void nautilus_list_base_scroll_to_item (NautilusListBase *self,
+                                        guint             position);
 void    nautilus_list_base_set_model               (NautilusListBase  *self,
                                                     NautilusViewModel *model);
 void    nautilus_list_base_add_overlay             (NautilusListBase  *self,

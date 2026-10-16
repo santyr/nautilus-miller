@@ -362,6 +362,68 @@ save_window_snapshot (GtkWidget *window)
     g_assert_true (gdk_texture_save_to_png (texture, filename));
 }
 
+static GtkWidget *
+find_list (GtkWidget *widget)
+{
+    if (GTK_IS_LIST_VIEW (widget)) { return widget; }
+    for (GtkWidget *child = gtk_widget_get_first_child (widget); child != NULL;
+         child = gtk_widget_get_next_sibling (child))
+    {
+        GtkWidget *found = find_list (child);
+        if (found != NULL) { return found; }
+    }
+    return NULL;
+}
+
+static void
+test_automatic_selection_revealed (void)
+{
+    g_autoptr (NautilusWindowSlot) slot = nautilus_window_slot_new (NAUTILUS_MODE_BROWSE);
+    g_autoptr (NautilusMillerView) strip = g_object_ref_sink (nautilus_miller_view_new (slot));
+    g_autoptr (GFile) root = g_file_new_for_path (test_get_tmp_dir ());
+    for (guint i = 0; i < 200; i++)
+    {
+        g_autofree char *name = g_strdup_printf ("row-%03u.txt", i);
+        g_autoptr (GFile) file = g_file_get_child (root, name);
+        g_assert_true (g_file_replace_contents (file, "", 0, NULL, FALSE, 0, NULL, NULL, NULL));
+    }
+    GtkWidget *window = gtk_window_new ();
+    GtkWidget *outer = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
+    GtkWidget *entry = gtk_entry_new ();
+    gtk_box_append (GTK_BOX (outer), entry);
+    gtk_box_append (GTK_BOX (outer), GTK_WIDGET (strip));
+    gtk_widget_set_vexpand (GTK_WIDGET (strip), TRUE);
+    gtk_window_set_child (GTK_WINDOW (window), outer);
+    gtk_window_set_default_size (GTK_WINDOW (window), 1100, 400);
+    nautilus_miller_view_set_location (strip, root, NULL);
+    gtk_window_present (GTK_WINDOW (window));
+    settle (strip);
+    wait_frame (window);
+    NautilusFilesView *view = nautilus_miller_view_get_active_view (strip);
+    GtkWidget *list = find_list (GTK_WIDGET (view));
+    g_assert_nonnull (list);
+    GtkAdjustment *adjustment = gtk_scrollable_get_vadjustment (GTK_SCROLLABLE (list));
+    gtk_adjustment_set_value (adjustment, 0);
+    gtk_widget_grab_focus (entry);
+    g_autoptr (GFile) target = g_file_get_child (root, "row-199.txt");
+    g_autoptr (NautilusFile) target_file = nautilus_file_get (target);
+    GList selection = { .data = target_file };
+    /* This is the endpoint-selection path used by FileManager1 ShowItems. */
+    nautilus_miller_view_set_location (strip, root, &selection);
+    settle (strip);
+    gint64 deadline = g_get_monotonic_time () + 5 * G_TIME_SPAN_SECOND;
+    while (gtk_adjustment_get_value (adjustment) == 0 && g_get_monotonic_time () < deadline)
+    {
+        g_main_context_iteration (NULL, FALSE);
+        g_usleep (1000);
+    }
+    g_assert_cmpfloat (gtk_adjustment_get_value (adjustment), >, 0);
+    GtkWidget *focused = gtk_root_get_focus (GTK_ROOT (window));
+    g_assert_true (focused == entry || gtk_widget_is_ancestor (focused, entry));
+    gtk_window_destroy (GTK_WINDOW (window));
+    test_clear_tmp_dir ();
+}
+
 static void
 test_full_window_operations (void)
 {
@@ -470,6 +532,7 @@ main (int argc, char **argv)
     g_test_add_func ("/miller/slot/navigation-and-switching", test_slot_navigation_and_switching);
     g_test_add_func ("/miller/view/error-is-local", test_error_is_local);
     g_test_add_func ("/miller/view/keyboard-and-focus", test_keyboard_and_focus);
+    g_test_add_func ("/miller/view/automatic-selection-revealed", test_automatic_selection_revealed);
     g_test_add_func ("/miller/view/branch-selection", test_branch_selection);
     g_test_add_func ("/miller/view/deep-path-and-replacement", test_deep_path_and_replacement);
     return g_test_run ();

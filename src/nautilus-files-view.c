@@ -823,7 +823,7 @@ nautilus_files_view_call_set_selection (NautilusFilesView *self,
     self->in_auto_selection = auto_selection;
 
     /* Set focus on the first selected row, and scroll it into view. */
-    if (!gtk_bitset_is_empty (new_selection_set) && !(self->managed_context && auto_selection))
+    if (!gtk_bitset_is_empty (new_selection_set))
     {
         guint first_position = gtk_bitset_get_nth (new_selection_set, 0);
 
@@ -831,7 +831,14 @@ nautilus_files_view_call_set_selection (NautilusFilesView *self,
          * to be redundact, but is necessary in order to fix the bug reported in
          * https://gitlab.gnome.org/GNOME/nautilus/-/issues/2294 . See also
          * GTK ticket: https://gitlab.gnome.org/GNOME/gtk/-/issues/5485 */
-        nautilus_list_base_set_cursor (self->list_base, first_position, TRUE, TRUE);
+        if (self->managed_context && auto_selection)
+        {
+            nautilus_list_base_scroll_to_item (self->list_base, first_position);
+        }
+        else
+        {
+            nautilus_list_base_set_cursor (self->list_base, first_position, TRUE, TRUE);
+        }
     }
 
     gtk_bitset_union (update_set, new_selection_set);
