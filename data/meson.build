@@ -106,7 +106,7 @@ schema_xml = configure_file(
   command: [find_program('python3'), files('miller-schemas.py'), '@INPUT@', '@OUTPUT@', schema_prefix, schema_path],
   install_dir: join_paths(datadir, 'glib-2.0', 'schemas')
 )
-custom_target('gsettings-schemas',
+gsettings_schemas = custom_target('gsettings-schemas',
   input: schema_xml,
   output: 'gschemas.compiled',
   command: [find_program('glib-compile-schemas'), '--strict', '--targetdir', meson.current_build_dir(), meson.current_build_dir()],

@@ -14,6 +14,7 @@
 #include "nautilus-resources.h"
 #include "nautilus-tag-manager.h"
 #include "nautilus-view-model.h"
+#include "nautilus-view-item.h"
 #include "nautilus-window-slot.h"
 
 typedef struct { GtkIMContext parent; char *preedit; } TestIMContext;
@@ -216,6 +217,37 @@ test_location_change (Fixture *f, gconstpointer unused)
     g_assert_false (nautilus_miller_typeahead_get_searching (f->engine));
 }
 static void
+test_large_loaded_model (Fixture *f, gconstpointer unused)
+{
+    NautilusViewModel *model = nautilus_files_view_get_private_model (f->view);
+    g_autolist (NautilusViewItem) items = NULL;
+    /* Exercise matching over 100k already-loaded names, without conflating
+     * this algorithm check with Stage5's real directory/monitor benchmarks. */
+    for (guint i = 0; i < 100000; i++)
+    {
+        g_autofree char *name = g_strdup_printf ("generated-%06u", i);
+        g_autoptr (GFile) location = g_file_get_child (f->root, name);
+        g_autoptr (NautilusFile) file = nautilus_file_get (location);
+        items = g_list_prepend (items, nautilus_view_item_new (file));
+    }
+    nautilus_view_model_add_items (model, items);
+    g_assert_cmpuint (g_list_model_get_n_items (G_LIST_MODEL (model)), >=, 100000);
+    drain (f);
+    nautilus_miller_typeahead_set_focused (f->engine, TRUE);
+    guint beats = 0;
+    guint source = g_idle_add (heartbeat, &beats);
+    g_signal_emit_by_name (f->context, "commit", "zzzz-no-match");
+    gint64 deadline = g_get_monotonic_time () + 3 * G_TIME_SPAN_SECOND;
+    while (nautilus_miller_typeahead_get_searching (f->engine))
+    {
+        g_assert_cmpint (g_get_monotonic_time (), <, deadline);
+        g_main_context_iteration (NULL, FALSE);
+    }
+    g_source_remove (source);
+    g_assert_cmpuint (beats, >=, 300);
+    g_assert_nonnull (strstr (gtk_label_get_text (GTK_LABEL (f->hint)), "No match"));
+}
+static void
 test_empty_and_expiry (Fixture *f, gconstpointer unused)
 {
     g_autoptr (GFile) child = g_file_get_child (f->root, "empty");
@@ -341,6 +373,7 @@ main (int argc, char **argv)
     CASE ("reset-new-selection", NULL, test_reset_and_new_selection);
     CASE ("bounded-miss-dispose", GINT_TO_POINTER (1), test_bounded_miss_and_dispose);
     CASE ("location-change", NULL, test_location_change);
+    CASE ("100k-loaded-model", NULL, test_large_loaded_model);
     CASE ("empty-expiry", NULL, test_empty_and_expiry);
     CASE ("view-destroyed", NULL, test_view_destroyed);
     CASE ("pending-match-expiry", NULL, test_expiry_cancels_pending_match);

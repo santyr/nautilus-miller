@@ -39,6 +39,7 @@ foreach test_name, extra_args : tests
     test_name,
     exe,
     args: args,
+    depends: gsettings_schemas,
     env: [
       test_env,
       extra_args.get('env', []),

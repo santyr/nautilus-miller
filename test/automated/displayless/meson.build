@@ -53,6 +53,7 @@ foreach test_name, extra_args : tests
     test_name,
     exe,
     args: args,
+    depends: gsettings_schemas,
     env: [
       test_env,
       'G_TEST_BUILDDIR=@0@'.format(meson.current_build_dir()),

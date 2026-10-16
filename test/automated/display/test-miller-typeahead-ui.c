@@ -12,6 +12,8 @@
 #include "nautilus-tag-manager.h"
 #include "nautilus-window.h"
 #include "nautilus-window-slot.h"
+#include "nautilus-view-model.h"
+#include <unistd.h>
 
 typedef struct
 {
@@ -255,6 +257,149 @@ test_grid_list_keep_search (Fixture *f, gconstpointer unused)
         tap (GDK_KEY_Escape); pump (100); settle (f);
     }
 }
+static void count_action (GSimpleAction *action, GVariant *parameter, guint *count) { (*count)++; }
+static void
+test_anthy_composition (Fixture *f, gconstpointer unused)
+{
+    if (input == NULL || g_strcmp0 (g_getenv ("MILLER_TEST_IME"), "anthy") != 0)
+    {
+        g_test_skip ("Requires with-test-ime.py private Anthy session");
+        return;
+    }
+    g_assert_cmpstr (g_getenv ("GTK_IM_MODULE"), ==, "ibus");
+    g_autoptr (GFile) japanese = g_file_get_child (f->root, "日本");
+    g_assert_true (g_file_make_directory (japanese, NULL, NULL));
+    pump (150); settle (f);
+    select_file (f, f->beta); settle (f);
+    gtk_widget_grab_focus (GTK_WIDGET (f->view));
+    guint previews = 0;
+    GAction *action = g_action_map_lookup_action (G_ACTION_MAP (nautilus_files_view_get_private_action_group (f->view)), "preview-selection");
+    gulong handler = g_signal_connect (action, "activate", G_CALLBACK (count_action), &previews);
+    /* Actual compositor keys traverse the real IBus module and Anthy process. */
+    const char *romaji = "nihon";
+    for (guint i = 0; romaji[i] != '\0'; i++) { tap (romaji[i]); pump (40); }
+    GtkWidget *hint = gtk_widget_get_last_child (gtk_widget_get_parent (GTK_WIDGET (f->view)));
+    g_test_message ("Anthy preedit hint: %s", gtk_label_get_text (GTK_LABEL (hint)));
+    g_assert_nonnull (strstr (gtk_label_get_text (GTK_LABEL (hint)), "にほ"));
+    g_assert_true (is_selected (f, f->beta));
+    tap (GDK_KEY_space); pump (100);
+    g_test_message ("Anthy conversion hint: %s", gtk_label_get_text (GTK_LABEL (hint)));
+    g_assert_nonnull (strstr (gtk_label_get_text (GTK_LABEL (hint)), "日本"));
+    g_assert_cmpuint (previews, ==, 0);
+    g_assert_true (is_selected (f, f->beta));
+    tap (GDK_KEY_Return); wait_selected (f, japanese); settle (f);
+    g_assert_cmpuint (previews, ==, 0);
+    g_assert_true (nautilus_window_slot_get_current_view (f->slot) == f->view);
+    GtkWidget *focus = gtk_root_get_focus (GTK_ROOT (f->window));
+    g_assert_true (focus == GTK_WIDGET (f->view) || gtk_widget_is_ancestor (focus, GTK_WIDGET (f->view)));
+    g_signal_handler_disconnect (action, handler);
+
+    tap (GDK_KEY_Escape); pump (50);
+    tap (GDK_KEY_n); tap (GDK_KEY_i); pump (100);
+    g_assert_true (gtk_widget_get_visible (hint));
+    nautilus_window_new_tab (f->window); pump (100);
+    g_assert_false (gtk_widget_get_visible (hint));
+    g_autoptr (GFile) empty = g_file_get_child (f->root, "empty-other-tab");
+    g_assert_true (g_file_make_directory (empty, NULL, NULL));
+    nautilus_window_open_location_full (f->window, empty, 0, NULL);
+    g_autoptr (NautilusWindowSlot) other = NULL;
+    g_object_get (f->window, "active-slot", &other, NULL);
+    gint64 end = g_get_monotonic_time () + 10 * G_TIME_SPAN_SECOND;
+    while (nautilus_window_slot_get_loading (other) || g_main_context_pending (NULL))
+    {
+        g_assert_cmpint (g_get_monotonic_time (), <, end);
+        g_main_context_iteration (NULL, FALSE); g_usleep (1000);
+    }
+    NautilusFilesView *other_view = nautilus_window_slot_get_current_view (other);
+    gtk_widget_grab_focus (GTK_WIDGET (other_view));
+    tap (GDK_KEY_Return); pump (100);
+    g_assert_true (is_selected (f, japanese));
+    g_assert_cmpuint (g_list_model_get_n_items (G_LIST_MODEL (nautilus_files_view_get_private_model (other_view))), ==, 0);
+    g_object_set (f->window, "active-slot", f->slot, NULL); pump (100);
+    gtk_widget_grab_focus (GTK_WIDGET (f->view));
+    tap (GDK_KEY_n); tap (GDK_KEY_i); pump (100);
+    g_assert_nonnull (strstr (gtk_label_get_text (GTK_LABEL (hint)), ": に"));
+    /* Close a composing tab using the native shortcut; the other empty tab
+     * remains a safe target for any late input-method replies. */
+    shortcut (GDK_KEY_Control_L, GDK_KEY_w); pump (200);
+    g_assert_true (nautilus_window_slot_get_active (other));
+    g_assert_true (g_object_get_data (G_OBJECT (f->window), "nautilus-active-file-view") == other_view);
+    tap (GDK_KEY_Return); pump (100);
+    g_assert_cmpuint (g_list_model_get_n_items (G_LIST_MODEL (nautilus_files_view_get_private_model (other_view))), ==, 0);
+}
+static GtkWidget *
+find_spin (GtkWidget *widget)
+{
+    if (GTK_IS_SPIN_BUTTON (widget)) { return widget; }
+    for (GtkWidget *child = gtk_widget_get_first_child (widget); child != NULL;
+         child = gtk_widget_get_next_sibling (child))
+    {
+        GtkWidget *found = find_spin (child);
+        if (found != NULL) { return found; }
+    }
+    return NULL;
+}
+static void
+test_state_process (void)
+{
+    const char *phase = g_getenv ("MILLER_STATE_PHASE");
+    if (input == NULL || phase == NULL)
+    {
+        g_test_skip ("Requires test-state-restart.py separate application processes");
+        return;
+    }
+    g_assert_cmpstr (g_getenv ("GSETTINGS_BACKEND"), ==, "dconf");
+    g_autofree char *path = g_build_filename (g_get_tmp_dir (), "persistent-location", NULL);
+    g_autoptr (GFile) root = g_file_new_for_path (path);
+    g_autoptr (GFile) child = g_file_get_child (root, "new-default");
+    gboolean writer = g_strcmp0 (phase, "write") == 0;
+    if (writer) { g_assert_true (g_file_make_directory_with_parents (child, NULL, NULL)); }
+    else { g_assert_cmpstr (phase, ==, "read"); g_assert_true (g_file_query_exists (child, NULL)); }
+    g_settings_set_enum (nautilus_preferences, NAUTILUS_PREFERENCES_DEFAULT_FOLDER_VIEWER, 4);
+    Fixture f = { .window = nautilus_window_new () };
+    nautilus_window_open_location_full (f.window, root, 0, NULL);
+    gtk_window_present (GTK_WINDOW (f.window));
+    g_object_get (f.window, "active-slot", &f.slot, NULL);
+    settle (&f);
+    f.view = nautilus_window_slot_get_current_view (f.slot);
+    GtkWidget *column = gtk_widget_get_parent (GTK_WIDGET (f.view));
+    GtkWidget *spin = find_spin (column);
+    g_assert_nonnull (spin);
+    if (writer)
+    {
+        gtk_spin_button_set_value (GTK_SPIN_BUTTON (spin), 460);
+        g_settings_set_uint (nautilus_preferences, "miller-default-column-width", 360);
+    }
+    else
+    {
+        g_assert_cmpint (gtk_spin_button_get_value_as_int (GTK_SPIN_BUTTON (spin)), ==, 460);
+        int width;
+        gtk_widget_get_size_request (column, &width, NULL);
+        g_assert_cmpint (width, ==, 460);
+        g_assert_cmpuint (g_settings_get_uint (nautilus_preferences, "miller-default-column-width"), ==, 360);
+        g_assert_false (g_settings_get_boolean (nautilus_preferences, "miller-type-to-select"));
+    }
+    nautilus_preferences_dialog_show (GTK_WIDGET (f.window)); pump (100);
+    AdwDialog *dialog = adw_application_window_get_visible_dialog (ADW_APPLICATION_WINDOW (f.window));
+    GtkWidget *row = preference_row (GTK_WIDGET (dialog));
+    g_assert_nonnull (row);
+    if (writer) { adw_switch_row_set_active (ADW_SWITCH_ROW (row), FALSE); }
+    g_assert_false (adw_switch_row_get_active (ADW_SWITCH_ROW (row)));
+    adw_dialog_force_close (dialog); pump (50);
+    if (!writer)
+    {
+        nautilus_window_open_location_full (f.window, child, 0, NULL); settle (&f);
+        f.view = nautilus_window_slot_get_current_view (f.slot);
+        spin = find_spin (gtk_widget_get_parent (GTK_WIDGET (f.view)));
+        g_assert_nonnull (spin);
+        g_assert_cmpint (gtk_spin_button_get_value_as_int (GTK_SPIN_BUTTON (spin)), ==, 360);
+    }
+    g_settings_sync ();
+    g_test_message ("Persistence %s process %u", phase, (guint) getpid ());
+    gtk_window_destroy (GTK_WINDOW (f.window));
+    g_object_unref (f.slot);
+    pump (100);
+}
 
 int
 main (int argc, char **argv)
@@ -282,6 +427,8 @@ main (int argc, char **argv)
     CASE ("immediate-right", test_immediate_right);
     CASE ("tab-focus-preference", test_tab_focus_and_preference);
     CASE ("grid-list-search", test_grid_list_keep_search);
+    CASE ("anthy-composition", test_anthy_composition);
+    g_test_add_func ("/miller/typeahead-ui/process-state", test_state_process);
     int result = g_test_run ();
     miller_test_input_free (input);
     return result;
