@@ -47,6 +47,8 @@ struct _NautilusMillerView
     gboolean reconciling;
     guint scroll_tick;
     guint scroll_frames;
+    guint reveal_primary;
+    guint reveal_secondary;
 };
 G_DEFINE_TYPE (NautilusMillerView, nautilus_miller_view, ADW_TYPE_BIN)
 enum { ACTIVE_VIEW_CHANGED, LOCATION_REQUESTED, LAST_SIGNAL };
@@ -87,16 +89,78 @@ set_active_view (NautilusMillerView *self, NautilusFilesView *view)
     }
 }
 
+static void
+cancel_reveal (NautilusMillerView *self)
+{
+    if (self->scroll_tick != 0)
+    {
+        gtk_widget_remove_tick_callback (GTK_WIDGET (self), self->scroll_tick);
+        self->scroll_tick = 0;
+    }
+}
+
 static gboolean
-scroll_to_end (GtkWidget *widget, GdkFrameClock *clock, gpointer data)
+reveal_columns (GtkWidget *widget, GdkFrameClock *clock, gpointer data)
 {
     NautilusMillerView *self = data;
     if (self->scroll_frames++ == 0) { return G_SOURCE_CONTINUE; }
-    GtkAdjustment *adjustment = gtk_scrolled_window_get_hadjustment (self->scroller);
-    gtk_adjustment_set_value (adjustment, gtk_adjustment_get_upper (adjustment) -
-                             gtk_adjustment_get_page_size (adjustment));
     self->scroll_tick = 0;
+    if (self->reveal_primary >= self->columns->len) { return G_SOURCE_REMOVE; }
+    MillerColumn *column = self->columns->pdata[self->reveal_primary];
+    graphene_rect_t bounds;
+    if (!gtk_widget_compute_bounds (column->box, GTK_WIDGET (self->strip), &bounds))
+    {
+        return G_SOURCE_REMOVE;
+    }
+    GtkAdjustment *adjustment = gtk_scrolled_window_get_hadjustment (self->scroller);
+    double page = gtk_adjustment_get_page_size (adjustment);
+    double start = bounds.origin.x;
+    double end = start + bounds.size.width;
+    if (self->reveal_secondary < self->columns->len)
+    {
+        MillerColumn *secondary = self->columns->pdata[self->reveal_secondary];
+        graphene_rect_t other;
+        if (gtk_widget_compute_bounds (secondary->box, GTK_WIDGET (self->strip), &other))
+        {
+            double pair_start = MIN (start, other.origin.x);
+            double pair_end = MAX (end, other.origin.x + other.size.width);
+            if (pair_end - pair_start <= page) { start = pair_start; end = pair_end; }
+        }
+    }
+    double value = gtk_adjustment_get_value (adjustment);
+    if (end - start > page)
+    {
+        /* An overwide column cannot fit. Reveal its reading-order leading edge. */
+        value = gtk_widget_get_direction (GTK_WIDGET (self)) == GTK_TEXT_DIR_RTL ? end - page : start;
+    }
+    else if (start < value) { value = start; }
+    else if (end > value + page) { value = end - page; }
+    gtk_adjustment_set_value (adjustment, CLAMP (value, gtk_adjustment_get_lower (adjustment),
+        MAX (gtk_adjustment_get_lower (adjustment), gtk_adjustment_get_upper (adjustment) - page)));
     return G_SOURCE_REMOVE;
+}
+
+static void
+schedule_reveal (NautilusMillerView *self, guint primary, guint secondary)
+{
+    cancel_reveal (self);
+    self->reveal_primary = primary;
+    self->reveal_secondary = secondary;
+    self->scroll_frames = 0;
+    self->scroll_tick = gtk_widget_add_tick_callback (GTK_WIDGET (self), reveal_columns, self, NULL);
+}
+
+static void
+manual_scroll_pressed (GtkGestureClick *gesture, int presses, double x, double y, NautilusMillerView *self)
+{
+    cancel_reveal (self);
+}
+
+static gboolean
+manual_scroll (GtkEventControllerScroll *controller, double x, double y, NautilusMillerView *self)
+{
+    cancel_reveal (self);
+    return FALSE;
 }
 
 static void
@@ -177,6 +241,11 @@ static void
 focus_enter (GtkEventControllerFocus *controller, MillerColumn *column)
 {
     set_active_view (column->owner, column->view);
+    guint position;
+    if (find_column (column->owner, column->view, &position) != NULL)
+    {
+        schedule_reveal (column->owner, position, G_MAXUINT);
+    }
 }
 
 static void
@@ -191,17 +260,24 @@ key_pressed (GtkEventControllerKey *controller, guint keyval, guint keycode,
 {
     NautilusMillerView *self = column->owner;
     guint position;
+    GtkRoot *root = gtk_widget_get_root (GTK_WIDGET (column->view));
+    GtkWidget *focused = root != NULL ? gtk_root_get_focus (root) : NULL;
+    if (focused != NULL && (GTK_IS_EDITABLE (focused) ||
+        gtk_widget_get_ancestor (focused, GTK_TYPE_POPOVER) != NULL)) { return FALSE; }
     if (state & (GDK_CONTROL_MASK | GDK_ALT_MASK | GDK_SUPER_MASK | GDK_SHIFT_MASK)) { return FALSE; }
     if (keyval != GDK_KEY_Left && keyval != GDK_KEY_Right) { return FALSE; }
     if (find_column (self, column->view, &position) == NULL) { return FALSE; }
-    if (keyval == GDK_KEY_Left && position > 0)
+    gboolean rtl = gtk_widget_get_direction (GTK_WIDGET (self)) == GTK_TEXT_DIR_RTL;
+    gboolean backward = keyval == (rtl ? GDK_KEY_Right : GDK_KEY_Left);
+    if (backward && position > 0)
     {
         MillerColumn *previous = self->columns->pdata[position - 1];
         set_active_view (self, previous->view);
         gtk_widget_grab_focus (GTK_WIDGET (previous->view));
+        schedule_reveal (self, position - 1, G_MAXUINT);
         return TRUE;
     }
-    if (keyval == GDK_KEY_Right)
+    if (!backward)
     {
         g_autolist (NautilusFile) selection = nautilus_files_view_get_selection (column->view);
         if (selection != NULL && selection->next == NULL && nautilus_file_is_directory (selection->data))
@@ -480,6 +556,8 @@ static void
 reconcile (NautilusMillerView *self, GFile *location, NautilusFileList *selection, gboolean preserve_focus)
 {
     self->reconciling = TRUE;
+    GFile *previous_location = nautilus_miller_view_get_location (self);
+    gboolean changed = previous_location == NULL || !g_file_equal (previous_location, location);
     guint common = nautilus_miller_path_set_location (self->path, location);
     guint count = nautilus_miller_path_get_n_columns (self->path);
     guint active_index = 0;
@@ -521,9 +599,13 @@ reconcile (NautilusMillerView *self, GFile *location, NautilusFileList *selectio
     }
     self->reconciling = FALSE;
     g_object_notify (G_OBJECT (self), "loading");
-    if (self->scroll_tick != 0) { gtk_widget_remove_tick_callback (GTK_WIDGET (self), self->scroll_tick); }
-    self->scroll_frames = 0;
-    self->scroll_tick = gtk_widget_add_tick_callback (GTK_WIDGET (self), scroll_to_end, self, NULL);
+    if (changed || !preserve_focus)
+    {
+        if (find_column (self, self->active_view, &active_index) != NULL)
+        {
+            schedule_reveal (self, active_index, preserve_focus && active_index + 2 == count ? count - 1 : G_MAXUINT);
+        }
+    }
 }
 
 void
@@ -586,11 +668,7 @@ static void
 nautilus_miller_view_dispose (GObject *object)
 {
     NautilusMillerView *self = NAUTILUS_MILLER_VIEW (object);
-    if (self->scroll_tick != 0)
-    {
-        gtk_widget_remove_tick_callback (GTK_WIDGET (self), self->scroll_tick);
-        self->scroll_tick = 0;
-    }
+    cancel_reveal (self);
     self->active_view = NULL;
     g_ptr_array_set_size (self->columns, 0);
     g_clear_object (&self->path);
@@ -659,6 +737,15 @@ nautilus_miller_view_init (NautilusMillerView *self)
     self->scroller = GTK_SCROLLED_WINDOW (gtk_scrolled_window_new ());
     gtk_scrolled_window_set_policy (self->scroller, GTK_POLICY_AUTOMATIC, GTK_POLICY_NEVER);
     gtk_scrolled_window_set_child (self->scroller, GTK_WIDGET (self->strip));
+    GtkEventController *scroll = gtk_event_controller_scroll_new (GTK_EVENT_CONTROLLER_SCROLL_BOTH_AXES);
+    gtk_event_controller_set_propagation_phase (scroll, GTK_PHASE_CAPTURE);
+    g_signal_connect_object (scroll, "scroll", G_CALLBACK (manual_scroll), self, 0);
+    gtk_widget_add_controller (GTK_WIDGET (self->scroller), scroll);
+    GtkGesture *press = gtk_gesture_click_new ();
+    gtk_gesture_single_set_button (GTK_GESTURE_SINGLE (press), 0);
+    gtk_event_controller_set_propagation_phase (GTK_EVENT_CONTROLLER (press), GTK_PHASE_CAPTURE);
+    g_signal_connect_object (press, "pressed", G_CALLBACK (manual_scroll_pressed), self, 0);
+    gtk_widget_add_controller (GTK_WIDGET (self->scroller), GTK_EVENT_CONTROLLER (press));
     adw_bin_set_child (ADW_BIN (self), GTK_WIDGET (self->scroller));
     gtk_widget_add_css_class (GTK_WIDGET (self), "nautilus-miller-view");
 }

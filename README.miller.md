@@ -6,6 +6,8 @@ Select **Columns View** from View Options, or press **Ctrl+3**. Selecting a fold
 
 Each column heading has **Column Options**: a keyboard-accessible width control, **Fit to Contents**, **Reset Width**, and **Use as Default**. Dragged widths are saved on release. Directory widths range from 180 to 1200 pixels and default to 280; the 128 most recently used overrides are remembered in the app's settings. Fit samples up to 128 loaded rows, so an unusually long unsampled filename may still be ellipsized; full names remain available by tooltip. Credential-bearing or unsupported remote URI identities are not remembered.
 
+Navigation reveals the relevant column with minimal horizontal scrolling. Selecting a folder shows its parent and child together when they fit; otherwise it keeps the focused parent visible. Background loading and delayed location updates preserve manual scrolling. In right-to-left layouts, Left enters the selected child and Right returns to its parent. Arrow keys inside editors and popovers retain their native behavior.
+
 The toolbar cycles **List → Grid → Columns → List** in ordinary folders. Its icon, tooltip, and accessible name describe the next view. In special locations that do not support Columns, the toggle cycles List and Grid; selecting Columns explicitly still saves it for ordinary browsing. **Ctrl+1** selects List, **Ctrl+2** Grid, and **Ctrl+3** Columns.
 
 Search, Recent, Starred, Trash, and the Network overview use their existing views. Columns returns when you resume ordinary folder browsing. This version has no file preview pane.

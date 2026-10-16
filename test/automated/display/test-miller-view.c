@@ -525,6 +525,169 @@ test_column_width_controls (void)
 }
 
 static void
+assert_column_visible (NautilusMillerView *strip, NautilusFilesView *view)
+{
+    GtkWidget *box = gtk_widget_get_parent (GTK_WIDGET (view));
+    graphene_rect_t bounds;
+    g_assert_true (gtk_widget_compute_bounds (box, gtk_widget_get_parent (box), &bounds));
+    GtkScrolledWindow *scroller = GTK_SCROLLED_WINDOW (adw_bin_get_child (ADW_BIN (strip)));
+    GtkAdjustment *adjustment = gtk_scrolled_window_get_hadjustment (scroller);
+    double value = gtk_adjustment_get_value (adjustment);
+    double page = gtk_adjustment_get_page_size (adjustment);
+    g_test_message ("Column x=%.0f width=%.0f; viewport=%.0f+%.0f", bounds.origin.x, bounds.size.width, value, page);
+    g_assert_cmpfloat (bounds.origin.x, >=, value - 1);
+    g_assert_cmpfloat (bounds.origin.x + bounds.size.width, <=, value + page + 1);
+}
+
+static void
+test_minimal_reveal (void)
+{
+    g_settings_reset (nautilus_preferences, MILLER_DEFAULT_WIDTH_KEY);
+    g_settings_reset (nautilus_preferences, MILLER_WIDTHS_KEY);
+    g_autoptr (GFile) root = g_file_new_for_path (test_get_tmp_dir ());
+    g_autoptr (GFile) parent = g_file_resolve_relative_path (root, "one/two/three/four");
+    g_autoptr (GFile) child = g_file_get_child (parent, "wide-child");
+    g_assert_true (g_file_make_directory_with_parents (child, NULL, NULL));
+    nautilus_miller_width_set (nautilus_preferences, child, 1100);
+    g_autoptr (NautilusWindowSlot) slot = nautilus_window_slot_new (NAUTILUS_MODE_BROWSE);
+    g_autoptr (NautilusMillerView) strip = g_object_ref_sink (nautilus_miller_view_new (slot));
+    GtkWidget *window = gtk_window_new ();
+    gtk_window_set_default_size (GTK_WINDOW (window), 900, 600);
+    gtk_window_set_child (GTK_WINDOW (window), GTK_WIDGET (strip));
+    nautilus_miller_view_set_location (strip, parent, NULL);
+    gtk_window_present (GTK_WINDOW (window));
+    settle (strip);
+    wait_frame (window);
+    wait_frame (window);
+    NautilusFilesView *parent_view = nautilus_miller_view_get_active_view (strip);
+    gtk_widget_grab_focus (GTK_WIDGET (parent_view));
+    select_path (parent_view, child, FALSE);
+    settle (strip);
+    wait_frame (window);
+    wait_frame (window);
+    wait_frame (window);
+    /* Disclosure must keep the focused parent visible even if child is wider
+     * than the viewport. The old unconditional end-scroll hides it entirely. */
+    assert_column_visible (strip, parent_view);
+    GtkScrolledWindow *scroller = GTK_SCROLLED_WINDOW (adw_bin_get_child (ADW_BIN (strip)));
+    GtkAdjustment *adjustment = gtk_scrolled_window_get_hadjustment (scroller);
+    gtk_adjustment_set_value (adjustment, 0);
+    /* Delayed slot echo of the selection-driven navigation is not a new user
+     * request and must preserve intervening manual horizontal scrolling. */
+    nautilus_miller_view_set_location (strip, child, NULL);
+    g_signal_emit_by_name (parent_view, "end-loading", TRUE);
+    settle (strip);
+    wait_frame (window);
+    wait_frame (window);
+    g_assert_cmpfloat (gtk_adjustment_get_value (adjustment), ==, 0);
+    g_assert_true (send_arrow (parent_view, GDK_KEY_Right));
+    settle (strip);
+    NautilusFilesView *child_view = nautilus_miller_view_get_active_view (strip);
+    g_assert_true (g_file_equal (nautilus_files_view_get_location (child_view), child));
+    g_autoptr (GListModel) scroll_controllers = gtk_widget_observe_controllers (GTK_WIDGET (scroller));
+    gboolean wheel_seen = FALSE;
+    for (guint i = 0; i < g_list_model_get_n_items (scroll_controllers); i++)
+    {
+        g_autoptr (GtkEventController) controller = g_list_model_get_item (scroll_controllers, i);
+        if (GTK_IS_EVENT_CONTROLLER_SCROLL (controller) &&
+            gtk_event_controller_get_propagation_phase (controller) == GTK_PHASE_CAPTURE)
+        {
+            gboolean handled = FALSE;
+            g_signal_emit_by_name (controller, "scroll", 1.0, 0.0, &handled);
+            wheel_seen = TRUE;
+        }
+    }
+    g_assert_true (wheel_seen);
+    gtk_adjustment_set_value (adjustment, 0);
+    wait_frame (window);
+    wait_frame (window);
+    wait_frame (window);
+    g_assert_cmpfloat (gtk_adjustment_get_value (adjustment), ==, 0);
+    g_assert_true (send_arrow (child_view, GDK_KEY_Left));
+    wait_frame (window);
+    wait_frame (window);
+    wait_frame (window);
+    assert_column_visible (strip, parent_view);
+    double before = gtk_adjustment_get_value (adjustment);
+    gtk_widget_grab_focus (GTK_WIDGET (parent_view));
+    g_autoptr (GListModel) focus_controllers = gtk_widget_observe_controllers (GTK_WIDGET (parent_view));
+    for (guint i = 0; i < g_list_model_get_n_items (focus_controllers); i++)
+    {
+        g_autoptr (GtkEventController) controller = g_list_model_get_item (focus_controllers, i);
+        if (GTK_IS_EVENT_CONTROLLER_FOCUS (controller)) { g_signal_emit_by_name (controller, "enter"); }
+    }
+    wait_frame (window);
+    wait_frame (window);
+    wait_frame (window);
+    g_assert_cmpfloat (gtk_adjustment_get_value (adjustment), ==, before);
+
+    gtk_widget_set_default_direction (GTK_TEXT_DIR_RTL);
+    g_assert_true (send_arrow (parent_view, GDK_KEY_Left));
+    settle (strip);
+    child_view = nautilus_miller_view_get_active_view (strip);
+    g_assert_true (g_file_equal (nautilus_files_view_get_location (child_view), child));
+    gtk_widget_grab_focus (GTK_WIDGET (child_view));
+    g_assert_true (send_arrow (child_view, GDK_KEY_Right));
+    g_assert_true (nautilus_miller_view_get_active_view (strip) == parent_view);
+    wait_frame (window);
+    wait_frame (window);
+    wait_frame (window);
+    assert_column_visible (strip, parent_view);
+    graphene_rect_t parent_bounds, child_bounds;
+    GtkWidget *parent_box = gtk_widget_get_parent (GTK_WIDGET (parent_view));
+    GtkWidget *child_box = gtk_widget_get_parent (GTK_WIDGET (child_view));
+    g_assert_true (gtk_widget_compute_bounds (parent_box, gtk_widget_get_parent (parent_box), &parent_bounds));
+    g_assert_true (gtk_widget_compute_bounds (child_box, gtk_widget_get_parent (child_box), &child_bounds));
+    g_assert_cmpfloat (child_bounds.origin.x, <, parent_bounds.origin.x);
+    g_assert_true (send_arrow (parent_view, GDK_KEY_Left));
+    g_assert_true (g_file_equal (nautilus_files_view_get_location (nautilus_miller_view_get_active_view (strip)), child));
+    /* Replace the requested column before its frame callback runs. */
+    nautilus_miller_view_set_location (strip, root, NULL);
+    nautilus_miller_view_set_location (strip, parent, NULL);
+    gtk_window_destroy (GTK_WINDOW (window));
+    gtk_widget_set_default_direction (GTK_TEXT_DIR_LTR);
+    g_settings_reset (nautilus_preferences, MILLER_WIDTHS_KEY);
+    test_clear_tmp_dir ();
+}
+
+static void
+test_entry_arrows_do_not_navigate (void)
+{
+    g_autoptr (GFile) root = g_file_new_for_path (test_get_tmp_dir ());
+    g_autoptr (GFile) child = g_file_get_child (root, "child");
+    g_assert_true (g_file_make_directory (child, NULL, NULL));
+    g_autoptr (NautilusWindowSlot) slot = nautilus_window_slot_new (NAUTILUS_MODE_BROWSE);
+    g_autoptr (NautilusMillerView) strip = g_object_ref_sink (nautilus_miller_view_new (slot));
+    GtkWidget *window = gtk_window_new ();
+    gtk_window_set_default_size (GTK_WINDOW (window), 900, 600);
+    gtk_window_set_child (GTK_WINDOW (window), GTK_WIDGET (strip));
+    nautilus_miller_view_set_location (strip, root, NULL);
+    gtk_window_present (GTK_WINDOW (window));
+    settle (strip);
+    NautilusFilesView *view = nautilus_miller_view_get_active_view (strip);
+    select_path (view, child, FALSE);
+    settle (strip);
+    wait_frame (window);
+    wait_frame (window);
+    /* Rename-style editors are popover descendants of FilesView, so the
+     * strip's capture controller sees their keys before the editor does. */
+    GtkWidget *popover = gtk_popover_new ();
+    GtkWidget *entry = gtk_entry_new ();
+    gtk_popover_set_child (GTK_POPOVER (popover), entry);
+    gtk_widget_set_parent (popover, GTK_WIDGET (view));
+    gtk_popover_popup (GTK_POPOVER (popover));
+    gtk_widget_grab_focus (entry);
+    wait_frame (window);
+    g_assert_false (send_arrow (view, GDK_KEY_Right));
+    g_assert_true (nautilus_miller_view_get_active_view (strip) == view);
+    gtk_root_set_focus (GTK_ROOT (window), NULL);
+    gtk_widget_set_visible (popover, FALSE);
+    gtk_widget_unparent (popover);
+    gtk_window_destroy (GTK_WINDOW (window));
+    test_clear_tmp_dir ();
+}
+
+static void
 save_window_snapshot (GtkWidget *window)
 {
     const char *filename = g_getenv ("MILLER_SCREENSHOT_PATH");
@@ -887,6 +1050,8 @@ main (int argc, char **argv)
     g_test_add_func ("/miller/view/keyboard-and-focus", test_keyboard_and_focus);
     g_test_add_func ("/miller/view/automatic-selection-revealed", test_automatic_selection_revealed);
     g_test_add_func ("/miller/view/width-controls", test_column_width_controls);
+    g_test_add_func ("/miller/view/minimal-reveal", test_minimal_reveal);
+    g_test_add_func ("/miller/view/entry-arrows", test_entry_arrows_do_not_navigate);
     g_test_add_func ("/miller/view/context-menu-action-owner", test_context_menu_owns_its_actions);
     g_test_add_func ("/miller/view/new-folder-parent-context", test_new_folder_captures_parent_context);
     g_test_add_func ("/miller/view/branch-selection", test_branch_selection);
