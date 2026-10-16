@@ -150,6 +150,8 @@ libnautilus_sources = [
   'nautilus-metadata.h',
   'nautilus-mime-actions.c',
   'nautilus-mime-actions.h',
+  'nautilus-miller-path.c',
+  'nautilus-miller-path.h',
   'nautilus-minimal-cell.c',
   'nautilus-minimal-cell.h',
   'nautilus-module.c',
