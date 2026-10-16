@@ -16,6 +16,7 @@
 #include "nautilus-monitor.h"
 #include "nautilus-bookmark-list.h"
 #include "nautilus-pathbar.h"
+#include "nautilus-view-item.h"
 #include "nautilus-sidebar.h"
 #include "nautilus-sidebar-row.h"
 #include "miller-test-input.h"
@@ -1245,6 +1246,166 @@ test_navigation_mount (Fixture *f, gconstpointer unused)
     assert_native_location (f, f->child);
 }
 
+static void
+test_native_pending_background_capture (Fixture *f, gconstpointer unused)
+{
+    NautilusFilesView *parent = find_view (GTK_WIDGET (f->strip), f->root);
+    gtk_widget_grab_focus (GTK_WIDGET (parent)); settle_native (f);
+    nautilus_window_new_tab (NAUTILUS_WINDOW (f->window)); pump (150);
+    g_object_set (f->window, "active-slot", f->slot, NULL); pump (50);
+    double expected_horizontal = gtk_adjustment_get_value (horizontal (f));
+    g_assert_true (gtk_widget_activate_action (f->window, "win.close-current-view", NULL)); pump (100);
+    for (guint i = 0; i < 2; i++)
+    {
+        g_assert_true (gtk_widget_activate_action (f->window, "win.restore-tab", NULL));
+        AdwTabView *tabs = ADW_TAB_VIEW (find_widget_type (f->window, ADW_TYPE_TAB_VIEW));
+        g_assert_cmpint (adw_tab_view_get_n_pages (tabs), ==, 2);
+        AdwTabPage *page = adw_tab_view_get_nth_page (tabs, 1);
+        NautilusWindowSlot *restored = NAUTILUS_WINDOW_SLOT (adw_tab_page_get_child (page));
+        Fixture background = { .window = f->window, .slot = restored };
+        settle_native_location (&background, f->child);
+        g_assert_false (nautilus_window_slot_get_active (restored));
+        NautilusNavigationState *saved = nautilus_window_slot_get_navigation_state (restored);
+        GVariant *value = g_object_get_data (G_OBJECT (saved->current_location_bookmark), "nautilus-miller-history-state");
+        g_assert_nonnull (value);
+        const char *active;
+        double position;
+        g_variant_get_child (value, 1, "&s", &active);
+        g_variant_get_child (value, 2, "d", &position);
+        g_autofree char *expected = g_file_get_uri (f->root);
+        g_assert_cmpstr (active, ==, expected);
+        g_assert_cmpfloat_with_epsilon (position, expected_horizontal, 2);
+        free_navigation_state (saved);
+        if (i == 0)
+        {
+            adw_tab_view_close_page (tabs, page); pump (150);
+            g_assert_cmpint (adw_tab_view_get_n_pages (tabs), ==, 1);
+        }
+        else
+        {
+            adw_tab_view_set_selected_page (tabs, page); settle_native (&background);
+            parent = nautilus_window_slot_get_current_view (restored);
+            g_assert_true (g_file_equal (nautilus_files_view_get_location (parent), f->root));
+            assert_selection (parent, f->child);
+            g_assert_true (g_object_get_data (G_OBJECT (f->window), "nautilus-active-file-view") == parent);
+        }
+        g_clear_object (&background.strip);
+    }
+}
+
+static void
+test_native_loading_flat_selection (Fixture *f, gconstpointer unused)
+{
+    const guint modes[] = { 2, 1 };
+    for (guint i = 0; i < G_N_ELEMENTS (modes); i++)
+    {
+        NautilusFilesView *parent = find_view (GTK_WIDGET (f->strip), f->root);
+        gtk_widget_grab_focus (GTK_WIDGET (parent)); settle_native (f);
+        g_assert_true (gtk_widget_activate_action (GTK_WIDGET (f->slot), "slot.files-view-mode", "u", modes[i]));
+        NautilusFilesView *view = nautilus_window_slot_get_current_view (f->slot);
+        g_assert_true (nautilus_files_view_get_loading (view));
+        select_file (view, f->two); settle_native (f);
+        assert_selection (view, f->two);
+        g_assert_false (nautilus_files_view_is_selection_auto (view));
+        g_assert_true (gtk_widget_activate_action (GTK_WIDGET (f->slot), "slot.files-view-mode", "u", 4));
+        settle_native (f);
+        view = nautilus_window_slot_get_current_view (f->slot);
+        g_assert_true (g_file_equal (nautilus_files_view_get_location (view), f->child));
+        assert_selection (view, f->two);
+    }
+}
+
+
+typedef struct
+{
+    GFile *target;
+    gboolean selected;
+} LoadingSelection;
+
+static void
+select_loaded_row (NautilusFilesView *view, NautilusFileList *files, LoadingSelection *selection)
+{
+    if (selection->selected) { return; }
+    GtkSelectionModel *model = GTK_SELECTION_MODEL (nautilus_files_view_get_private_model (view));
+    for (guint i = 0; i < g_list_model_get_n_items (G_LIST_MODEL (model)); i++)
+    {
+        g_autoptr (GtkTreeListRow) row = g_list_model_get_item (G_LIST_MODEL (model), i);
+        g_autoptr (NautilusViewItem) item = gtk_tree_list_row_get_item (row);
+        g_autoptr (GFile) location = nautilus_file_get_location (nautilus_view_item_get_file (item));
+        if (g_file_equal (location, selection->target))
+        {
+            g_assert_true (nautilus_files_view_get_loading (view));
+            g_assert_true (gtk_selection_model_select_item (model, i, TRUE));
+            g_assert_false (nautilus_files_view_is_selection_auto (view));
+            selection->selected = TRUE;
+            return;
+        }
+    }
+}
+
+static void
+test_native_loading_model_selection (Fixture *f, gconstpointer unused)
+{
+    NautilusFilesView *parent = find_view (GTK_WIDGET (f->strip), f->root);
+    gtk_widget_grab_focus (GTK_WIDGET (parent)); settle_native (f);
+    g_assert_true (gtk_widget_activate_action (GTK_WIDGET (f->slot), "slot.files-view-mode", "u", 2));
+    NautilusFilesView *view = nautilus_window_slot_get_current_view (f->slot);
+    LoadingSelection selection = { .target = f->two };
+    g_signal_connect_after (view, "add-files", G_CALLBACK (select_loaded_row), &selection);
+    settle_native (f);
+    g_signal_handlers_disconnect_by_data (view, &selection);
+    g_assert_true (selection.selected);
+    assert_selection (view, f->two);
+    g_assert_true (gtk_widget_activate_action (GTK_WIDGET (f->slot), "slot.files-view-mode", "u", 4));
+    settle_native (f);
+    view = nautilus_window_slot_get_current_view (f->slot);
+    g_assert_true (g_file_equal (nautilus_files_view_get_location (view), f->child));
+    assert_selection (view, f->two);
+}
+
+static void
+test_native_automatic_model_clear (Fixture *f, gconstpointer unused)
+{
+    NautilusFilesView *parent = find_view (GTK_WIDGET (f->strip), f->root);
+    gtk_widget_grab_focus (GTK_WIDGET (parent)); settle_native (f);
+    g_assert_true (gtk_widget_activate_action (GTK_WIDGET (f->slot), "slot.files-view-mode", "u", 2));
+    settle_native (f);
+    NautilusFilesView *view = nautilus_window_slot_get_current_view (f->slot);
+    g_autoptr (NautilusFile) file = nautilus_file_get (f->two);
+    GList automatic = { .data = file };
+    nautilus_files_view_set_selection (view, &automatic, TRUE);
+    assert_selection (view, f->two);
+    g_assert_true (nautilus_files_view_is_selection_auto (view));
+    /* Exercise the real reload clear without a slot commit replacing its
+     * bookmark afterward and hiding the model's selection provenance. */
+    nautilus_files_view_set_location (view, f->child); settle_native (f);
+    g_assert_true (gtk_widget_activate_action (GTK_WIDGET (f->slot), "slot.files-view-mode", "u", 4));
+    settle_native (f);
+    view = nautilus_window_slot_get_current_view (f->slot);
+    g_assert_true (g_file_equal (nautilus_files_view_get_location (view), f->root));
+    assert_selection (view, f->child);
+}
+
+
+static void
+test_pending_same_view_focus (Fixture *f, gconstpointer unused)
+{
+    NautilusFilesView *parent = find_view (GTK_WIDGET (f->strip), f->root);
+    gtk_widget_grab_focus (GTK_WIDGET (parent)); settle (f);
+    g_autoptr (GVariant) saved = nautilus_miller_view_capture_state (f->strip, FALSE);
+    nautilus_miller_view_set_location (f->strip, f->other, NULL); settle (f);
+    nautilus_miller_view_restore_state (f->strip, saved, FALSE);
+    NautilusFilesView *child = find_view (GTK_WIDGET (f->strip), f->child);
+    gtk_widget_grab_focus (f->entry);
+    g_assert_true (gtk_widget_grab_focus (GTK_WIDGET (child)));
+    g_assert_true (nautilus_miller_view_get_active_view (f->strip) == child);
+    settle (f);
+    GtkWidget *focus = gtk_root_get_focus (GTK_ROOT (f->window));
+    g_assert_true (focus != NULL && gtk_widget_is_ancestor (focus, GTK_WIDGET (child)));
+    g_assert_true (nautilus_miller_view_get_active_view (f->strip) == child);
+    g_assert_true (g_object_get_data (G_OBJECT (f->window), "nautilus-active-file-view") == child);
+}
+
 int
 main (int argc, char **argv)
 {
@@ -1264,6 +1425,7 @@ main (int argc, char **argv)
     gtk_icon_theme_add_resource_path (gtk_icon_theme_get_for_display (gdk_display_get_default ()), "/org/gnome/nautilus/icons");
     nautilus_ensure_extension_points ();
 #define CASE(name, function) g_test_add ("/miller/state/" name, Fixture, NULL, setup, function, teardown)
+    CASE ("pending-same-view-focus", test_pending_same_view_focus);
     CASE ("roundtrip", test_roundtrip);
     CASE ("parent-entry", test_parent_context_and_entry);
     CASE ("new-entry-focus", test_new_entry_focus_during_restore);
@@ -1274,6 +1436,10 @@ main (int argc, char **argv)
     CASE ("activation-cancels-context", test_activation_cancels_pending_context);
     CASE ("reentrant-navigation", test_reentrant_navigation);
 #define NATIVE(name, function) g_test_add ("/miller/history/" name, Fixture, GINT_TO_POINTER (1), setup, function, teardown)
+    NATIVE ("pending-background-capture", test_native_pending_background_capture);
+    NATIVE ("loading-flat-selection", test_native_loading_flat_selection);
+    NATIVE ("loading-model-selection", test_native_loading_model_selection);
+    NATIVE ("automatic-model-clear", test_native_automatic_model_clear);
     NATIVE ("positions", test_native_history_positions);
     NATIVE ("parent-context", test_native_history_parent);
     NATIVE ("disclosure-history", test_native_disclosure_history);

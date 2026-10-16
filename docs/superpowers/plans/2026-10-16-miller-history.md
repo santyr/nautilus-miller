@@ -64,10 +64,14 @@
 - [x] RED guard/cleanup cases before a maintained helper: missing/forged session, mismatched bus/PID/executable, child failure and resume on failure. Prove enumeration remains pending while paused and completes after resume.
 - [x] Exercise actual A selection/loading, B selection before A completes, then resume. B keeps branch/action/focus; old A rows cannot return. Repeat navigation/close while pending. Use genuine private keys for selection/history and filesystem/model identity assertions, not emitted loading signals.
 - [x] Exercise existing navigation entry points with disposable locations: breadcrumbs/sidebar bookmark/Home, Ctrl+L absolute path and URI, new tab/window, special search/Recent/Starred/Trash/Network and return. Record full C01/C09/C11 evidence boundaries; real SFTP/SMB/auth/monitor/disconnect and release FileManager1 evidence remain later required gates.
-- [ ] Full Meson/Python/profile checks, commit. One fresh read-only whole-plan review; one regression-first correction pass for Critical/Important findings, with full green suite. Preserve all rulings/deferred minors; continue larger goal.
+- [x] Full Meson/Python/profile checks, commit. One fresh read-only whole-plan review; one regression-first correction pass for Critical/Important findings, with full green suite. Preserve all rulings/deferred minors; continue larger goal.
 
 ## Design reasoning and self-review
 
 Snapshots supplement the bookmarks already used for native Back/Forward and closed tabs. They carry directory identities because a Miller action view can be an ancestor of its endpoint. Immutable values cannot retain discarded widget/model lifetimes; cloning mutable bookmark owners avoids cross-tab overwrite. Restoration uses loaded metadata and one cancelable frame callback, so a user can supersede it while a slow directory loads. Numeric adjustments are clamped to current geometry rather than promising obsolete pixel positions after fonts/window size change. The archive fixture provides genuinely delayed GIO completion now; it does not substitute for mandatory real SFTP/SMB or performance testing.
 
 Self-review: state ownership and Task1 APIs match Task2 consumers; Task3 uses the existing guarded real input harness. Every review-focus item has explicit tests. Stage2 history/selection/navigation is covered by this plan; preview/operation/remote/a11y/performance/release scope remains in the full contract rather than being relabeled complete.
+
+## Completion record
+
+All three tasks and the one independent whole-plan review/correction pass are complete. See `docs/miller/history-review.md` for the three Important findings, regression-first corrections, full36/36 plus external10/10 and4/4 evidence, every ruling and remaining full-goal gates. Continue the existing feature worktree into the preview stage; this component is not a release/deployment handoff.

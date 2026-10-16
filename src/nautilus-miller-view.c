@@ -87,8 +87,8 @@ find_column (NautilusMillerView *self, NautilusFilesView *view, guint *position)
 static void
 set_active_view (NautilusMillerView *self, NautilusFilesView *view)
 {
-    if (self->active_view == view) { return; }
     if (!self->restoring) { cancel_restore (self); }
+    if (self->active_view == view) { return; }
     self->action_generation++;
     if (self->active_view != NULL)
     {
@@ -586,7 +586,7 @@ column_loading_changed (NautilusFilesView *view, GParamSpec *pspec, MillerColumn
          * Managed columns must establish a keyboard target themselves, without
          * taking focus from controls or letting background columns claim it. */
         GtkRoot *root = gtk_widget_get_root (GTK_WIDGET (self));
-        if (self->active && !self->restoring && self->active_view == view &&
+        if (self->active && self->restore_state == NULL && !self->restoring && self->active_view == view &&
             !nautilus_files_view_get_loading (view) && root != NULL && gtk_root_get_focus (root) == NULL)
         {
             gtk_widget_grab_focus (GTK_WIDGET (view));
@@ -757,6 +757,9 @@ column_vertical (MillerColumn *column)
 GVariant *
 nautilus_miller_view_capture_state (NautilusMillerView *self, gboolean leaving_branch)
 {
+    /* Unmapped tabs cannot run the restore tick. Until newer interaction
+     * cancels it, that immutable value is more complete than their widgets. */
+    if (self->restore_state != NULL) { return g_variant_ref (self->restore_state); }
     GFile *endpoint = nautilus_miller_view_get_location (self);
     if (endpoint == NULL) { return NULL; }
     GVariantBuilder columns;
@@ -986,7 +989,23 @@ static gboolean
 nautilus_miller_view_grab_focus (GtkWidget *widget)
 {
     NautilusMillerView *self = NAUTILUS_MILLER_VIEW (widget);
-    return self->active_view != NULL && gtk_widget_grab_focus (GTK_WIDGET (self->active_view));
+    if (self->active_view == NULL) { return FALSE; }
+    g_autoptr (NautilusFilesView) view = g_object_ref (self->active_view);
+    if (self->restore_state == NULL) { return gtk_widget_grab_focus (GTK_WIDGET (view)); }
+
+    /* GTK may establish default focus while a replacement view loads. Enter
+     * the saved action column without treating that as a newer user choice.
+     * Explicit entry into a particular listing still cancels restoration. */
+    g_autoptr (NautilusMillerView) hold = g_object_ref (self);
+    const char *active;
+    g_variant_get_child (self->restore_state, 1, "&s", &active);
+    MillerColumn *column = column_at_location (self, active, NULL);
+    if (column != NULL) { g_set_object (&view, column->view); }
+    gboolean was_restoring = self->restoring;
+    self->restoring = TRUE;
+    gboolean focused = gtk_widget_grab_focus (GTK_WIDGET (view));
+    self->restoring = was_restoring;
+    return focused;
 }
 
 static gboolean

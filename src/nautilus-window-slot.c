@@ -3000,8 +3000,11 @@ static void
 mode_selection_changed (GtkSelectionModel *model, guint position, guint n_items, NautilusWindowSlot *self)
 {
     NautilusFilesView *view = self->content_view;
-    if (self->miller_view == NULL && !nautilus_files_view_get_loading (view) &&
-        !nautilus_files_view_is_selection_auto (view) && !self->transferring_query)
+    /* Pending explicit selections are applied before loading becomes FALSE.
+     * Their provenance, rather than loading, decides whether they supersede
+     * the saved Columns context. Automatic restoration remains excluded. */
+    if (self->miller_view == NULL && !nautilus_files_view_is_selection_auto (view) &&
+        !self->transferring_query)
     {
         if (self->current_location_bookmark != NULL)
         {
@@ -3206,6 +3209,10 @@ nautilus_window_slot_grab_focus (GtkWidget *widget)
     if (nautilus_window_slot_get_search_visible (self))
     {
         return gtk_widget_grab_focus (GTK_WIDGET (self->query_editor));
+    }
+    else if (self->miller_view != NULL)
+    {
+        return gtk_widget_grab_focus (GTK_WIDGET (self->miller_view));
     }
     else if (self->content_view != NULL)
     {
