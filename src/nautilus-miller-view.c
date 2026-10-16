@@ -580,7 +580,17 @@ column_loading_changed (NautilusFilesView *view, GParamSpec *pspec, MillerColumn
 {
     if (!column->owner->reconciling)
     {
-        g_object_notify (G_OBJECT (column->owner), "loading");
+        g_autoptr (NautilusMillerView) self = g_object_ref (column->owner);
+        g_object_notify (G_OBJECT (self), "loading");
+        /* Initial loading can remove the window's temporary focused widget.
+         * Managed columns must establish a keyboard target themselves, without
+         * taking focus from controls or letting background columns claim it. */
+        GtkRoot *root = gtk_widget_get_root (GTK_WIDGET (self));
+        if (self->active && !self->restoring && self->active_view == view &&
+            !nautilus_files_view_get_loading (view) && root != NULL && gtk_root_get_focus (root) == NULL)
+        {
+            gtk_widget_grab_focus (GTK_WIDGET (view));
+        }
     }
 }
 
@@ -648,6 +658,18 @@ column_new (NautilusMillerView *self, GFile *location)
 static void
 reconcile (NautilusMillerView *self, GFile *location, NautilusFileList *selection, gboolean preserve_focus, gboolean reveal)
 {
+    g_autoptr (GtkRoot) root = gtk_widget_get_root (GTK_WIDGET (self));
+    if (root != NULL) { g_object_ref (root); }
+    GtkWidget *focused = root != NULL ? gtk_root_get_focus (root) : NULL;
+    g_autoptr (GtkWidget) old_focus = focused != NULL ? g_object_ref (focused) : NULL;
+    GtkWidget *focus_view = focused != NULL ?
+        (NAUTILUS_IS_FILES_VIEW (focused) ? focused : gtk_widget_get_ancestor (focused, NAUTILUS_TYPE_FILES_VIEW)) : NULL;
+    gboolean file_focused = focus_view != NULL &&
+        find_column (self, NAUTILUS_FILES_VIEW (focus_view), NULL) != NULL &&
+        !GTK_IS_EDITABLE (focused) && gtk_widget_get_ancestor (focused, GTK_TYPE_POPOVER) == NULL;
+    gboolean active_without_focus = focused == NULL && GTK_IS_WINDOW (root) &&
+        gtk_window_is_active (GTK_WINDOW (root));
+    gboolean follow_file_focus = !self->restoring && self->active && (file_focused || active_without_focus);
     self->reconciling = TRUE;
     GFile *previous_location = nautilus_miller_view_get_location (self);
     gboolean changed = previous_location == NULL || !g_file_equal (previous_location, location);
@@ -691,6 +713,14 @@ reconcile (NautilusMillerView *self, GFile *location, NautilusFileList *selectio
         set_active_view (self, last->view);
     }
     self->reconciling = FALSE;
+    /* Direct navigation replaces the focused listing. Return the keyboard to
+     * its replacement, while disclosure, restoration and controls elsewhere
+     * keep their own focus. A callback may already have chosen newer focus. */
+    if (!preserve_focus && follow_file_focus && changed && self->active && self->active_view != NULL &&
+        (gtk_root_get_focus (root) == NULL || gtk_root_get_focus (root) == old_focus))
+    {
+        gtk_widget_grab_focus (GTK_WIDGET (self->active_view));
+    }
     g_object_notify (G_OBJECT (self), "loading");
     if (reveal && (changed || !preserve_focus))
     {

@@ -55,7 +55,7 @@
 
 ### Task 3: Actual delayed backend and navigation-entry acceptance
 
-**Files:** new `tools/miller/with-delayed-backend.py`, `test/miller/test-delayed-backend.py`, `test-miller-state.c`; `src/nautilus-monitor.c` for the reproduced synchronous remote-monitor stall; input/acceptance documentation.
+**Files:** new `tools/miller/with-delayed-backend.py`, `test/miller/test-delayed-backend.py`, `test-miller-state.c`; `src/nautilus-monitor.c` for the reproduced synchronous remote-monitor stall; `with-test-home.py` and its guard tests; focused strip/slot fixes for reproduced navigation focus and cached special-view loading faults; input/acceptance documentation.
 
 **Fixture:** create an owned ZIP containing A/a.txt and B/b.txt, mount it through private GVfs archive service and obtain the canonical mounted root. This backend is read-only and uses no credentials. Identify only the archive process matching owned UID, executable and exact private D-Bus environment; resume it in finally before cleanup. Pausing this process deliberately holds real GIO enumeration pending. The successful throwaway probe is `/tmp/nautilus-finder-history-backend-probe4.log`; raw requested archive URI differs from GVfs's canonical mounted URI, so use the mount root, not a guessed URI. Outer harness owns D-Bus/XDG/compositor and cleanup. Never pause a host backend.
 
@@ -63,7 +63,7 @@
 
 - [x] RED guard/cleanup cases before a maintained helper: missing/forged session, mismatched bus/PID/executable, child failure and resume on failure. Prove enumeration remains pending while paused and completes after resume.
 - [x] Exercise actual A selection/loading, B selection before A completes, then resume. B keeps branch/action/focus; old A rows cannot return. Repeat navigation/close while pending. Use genuine private keys for selection/history and filesystem/model identity assertions, not emitted loading signals.
-- [ ] Exercise existing navigation entry points with disposable locations: breadcrumbs/sidebar bookmark/Home, Ctrl+L absolute path and URI, new tab/window, special search/Recent/Starred/Trash/Network and return. Record full C01/C09/C11 evidence boundaries; real SFTP/SMB/auth/monitor/disconnect and release FileManager1 evidence remain later required gates.
+- [x] Exercise existing navigation entry points with disposable locations: breadcrumbs/sidebar bookmark/Home, Ctrl+L absolute path and URI, new tab/window, special search/Recent/Starred/Trash/Network and return. Record full C01/C09/C11 evidence boundaries; real SFTP/SMB/auth/monitor/disconnect and release FileManager1 evidence remain later required gates.
 - [ ] Full Meson/Python/profile checks, commit. One fresh read-only whole-plan review; one regression-first correction pass for Critical/Important findings, with full green suite. Preserve all rulings/deferred minors; continue larger goal.
 
 ## Design reasoning and self-review

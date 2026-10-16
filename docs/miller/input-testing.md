@@ -49,7 +49,7 @@ Development input plan: [input and type-to-select](../superpowers/plans/2026-10-
 python3 tools/miller/with-test-session.py -- meson test -C build-miller test-miller-state --print-errorlogs
 ```
 
-This executable includes strip snapshot tests and native-window Back/Forward, view/search and tab integration. Its `keys-entry` case delivers actual Alt+Left/Right and Ctrl+L through the guarded private compositor, then verifies endpoint, action directory and retained location-entry focus. Other cases invoke native actions/APIs directly and assert directory identities, selections and GTK adjustments; they are not additional genuine-input coverage. Intentionally delayed enumeration, other navigation entry points, real remote services and accessibility remain separate acceptance requirements.
+This executable includes strip snapshot tests and native-window Back/Forward, view/search and tab integration. Its `keys-entry` case delivers actual Alt+Left/Right and Ctrl+L through the guarded private compositor, then verifies endpoint, action directory and retained location-entry focus. Other cases invoke native actions/APIs directly and assert directory identities, selections and GTK adjustments; they are not additional genuine-input coverage. The separate workflows below cover intentional delay and additional navigation entry points. Real remote services and accessibility remain separate acceptance requirements.
 
 ## Intentionally delayed GVfs backend
 
@@ -63,6 +63,22 @@ python3 tools/miller/with-test-session.py -- python3 tools/miller/with-delayed-b
 The helper mounts its own read-only ZIP with A/a.txt and B/b.txt in the disposable session. It obtains the actual canonical root from `GMount`; it does not guess GVfs's escaping. It requires the exact private metadata, current owned headless compositor and XDG tree. Only an archive backend with the current UID, exact executable and matching private bus can supply its retained PIDfd. Children send bounded pause/resume requests to a private600-mode Unix socket; no request can select a PID. The parent resumes before unmounting, handles failed children and termination, and reaps its own child. Cleanup still resumes the authorized process if a child corrupts the marker. A five-second pause deadline resumes the backend and makes the entire run fail, so it cannot manufacture a responsiveness pass.
 
 Nine Python cases cover these guards, actual enumeration held pending and then completed, fragmented/rejected requests, child failure, changed metadata, the pause deadline and termination cleanup. Four GTK cases cover real-key A→B replacement, navigation away, closing a genuinely loading tab, and monitor-creation latency/cancellation. Normal Meson runs explicitly skip these four when the backend fixture is absent. The external command above establishes the delayed-backend evidence. This read-only archive is not SFTP/SMB, authentication, reconnect, live remote monitoring or a performance benchmark.
+
+## Disposable Home and navigation entry points
+
+Build outside the mounted home, then run the built executable:
+
+```sh
+meson compile -C build-miller
+python3 test/miller/test-home-session.py
+python3 tools/miller/with-test-session.py -- python3 tools/miller/with-test-home.py -- python3 tools/miller/with-delayed-backend.py -- env GTK_A11Y=test GSETTINGS_SCHEMA_DIR="$PWD/build-miller/data" build-miller/test/automated/display/test-miller-state -p /miller/navigation
+```
+
+`with-test-home.py` first validates the existing private session. Bubblewrap masks the actual passwd home path with an owned disposable directory, leaves `HOME` unchanged, mounts the host root read-only, and rebinds only the already opened checkout read-only. Private XDG directories and the fixture home remain writable. A device/inode and mount proof runs before the child. The client bus and compositor start inside this namespace so the input helper can still verify their `/proc` identities. The archive helper must run inside that client session, as shown. Five Python cases cover host refusal, actual masking and write boundaries, child status/cleanup, compositor identity and mismatched metadata.
+
+Ten navigation cases cover initial listing focus and Ctrl+L/Escape, absolute-path and escaped-URI entry, Ctrl+2/1/3 mode switching with and without selection, pointer breadcrumb and sidebar bookmark activation with keyboard Back, Alt+Home and return, Ctrl+Enter background-tab and Shift+Enter new-window activation, native Recent/Starred/Trash/Network fallback and return, and entry into an actual mounted GVfs archive followed by Back. Pointer tests check the actual Wayland device position before delivering buttons. They do not emit button signals. Selection setup and special-view actions use native APIs directly; they are not additional real input claims. Starred uses the test's empty dummy tag manager, not a live starred-file index.
+
+These cases assert committed `GFile` locations and the current action owner. Mode/history cases also assert directory-scoped selections. The normal Meson run explicitly skips these ten without the mounted-home environment; the external run supplies their evidence. The archive mount does not establish sidebar volume activation, SFTP/SMB, authentication, writable remote operations or reconnect behavior.
 
 ## External IME observation after history integration
 

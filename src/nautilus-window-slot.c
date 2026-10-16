@@ -196,6 +196,7 @@ static void update_back_forward_actions (NautilusWindowSlot *self);
 static void clear_content_view (NautilusWindowSlot *self);
 static void bind_content_view (NautilusWindowSlot *self, NautilusFilesView *view);
 static void miller_loading_changed (NautilusMillerView *miller, GParamSpec *pspec, NautilusWindowSlot *self);
+static void view_is_loading_changed_cb (GObject *object, GParamSpec *pspec, NautilusWindowSlot *self);
 static void save_selection_for_history (NautilusWindowSlot *self);
 
 #define MILLER_HISTORY_STATE "nautilus-miller-history-state"
@@ -2315,6 +2316,10 @@ got_file_info_for_view_selection_callback (NautilusFile *file,
         {
             miller_loading_changed (self->miller_view, NULL, self);
         }
+        else if (self->content_view != NULL)
+        {
+            view_is_loading_changed_cb (G_OBJECT (self->content_view), NULL, self);
+        }
     }
     else
     {
@@ -2905,10 +2910,14 @@ static void
 view_ended_loading (NautilusWindowSlot *self,
                     NautilusFilesView  *view)
 {
-    if (view == self->content_view)
+    /* A cached special view can finish during mode replacement, before the
+     * pending location is committed. The navigation boundary synchronizes
+     * loading again after that commit; it still owns its pending state here. */
+    if (view != self->content_view || self->pending_location != NULL)
     {
-        end_location_change (self);
+        return;
     }
+    end_location_change (self);
 
     if (self->needs_reload)
     {
