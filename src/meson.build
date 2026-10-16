@@ -154,6 +154,8 @@ libnautilus_sources = [
   'nautilus-miller-column.h',
   'nautilus-miller-path.c',
   'nautilus-miller-path.h',
+  'nautilus-miller-view.c',
+  'nautilus-miller-view.h',
   'nautilus-minimal-cell.c',
   'nautilus-minimal-cell.h',
   'nautilus-module.c',

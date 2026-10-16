@@ -1,4 +1,5 @@
 tests = {
+  'test-miller-view': {'is_parallel': false},
   'test-nautilus-directory-async': {},
   'test-file-operations-create': {},
   'test-files-view': {

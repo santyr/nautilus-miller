@@ -389,3 +389,16 @@ rubberband {
 .toolbar.no-bottom-padding {
   padding-bottom: 0px;
 }
+
+/* Finder-style directory columns: inactive branch highlights stay visible. */
+.nautilus-miller-view { background: var(--view-bg-color); }
+.nautilus-miller-column listview { padding: 2px; }
+.nautilus-miller-column listview > row { border-radius: 4px; padding: 2px 6px; }
+.nautilus-miller-column .column-name-labels-box { min-width: 0; }
+.nautilus-miller-view .miller-heading { padding: 7px 10px; font-weight: bold; border-bottom: 1px solid var(--border-color); }
+.nautilus-miller-view .miller-separator { min-width: 5px; background: var(--border-color); }
+.nautilus-miller-view .miller-directory { min-width: 180px; }
+.nautilus-miller-view statuspage { padding: 0; }
+.nautilus-miller-view statuspage > scrolledwindow > viewport > box { margin: 12px; }
+.nautilus-miller-view statuspage .title { font-size: 14px; }
+.nautilus-miller-view .miller-file-view:not(.miller-active) row:selected { background: alpha(var(--accent-bg-color), 0.18); color: var(--view-fg-color); }

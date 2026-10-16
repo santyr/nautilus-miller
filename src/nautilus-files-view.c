@@ -198,6 +198,8 @@ struct _NautilusFilesView
     /* whether we are in the active slot */
     gboolean active;
     gboolean managed_context;
+    NautilusFile *branch_file;
+    GError *column_load_error;
 
     /* loading indicates whether this view has begun loading a directory.
      * This flag should need not be set inside subclasses. NautilusFilesView automatically
@@ -644,7 +646,7 @@ files_view_begin_loading (NautilusFilesView *self)
 
     GtkRoot *window = gtk_widget_get_root (GTK_WIDGET (self));
 
-    if (self->active && !focus_is_on_popup (window))
+    if (self->active && !self->managed_context && !focus_is_on_popup (window))
     {
         /* This mysterious gtk_widget_grab_focus() call has been carried over
          * many refactorings, along the way having been wrapped in multiple ways
@@ -820,7 +822,7 @@ nautilus_files_view_call_set_selection (NautilusFilesView *self,
     self->in_auto_selection = auto_selection;
 
     /* Set focus on the first selected row, and scroll it into view. */
-    if (!gtk_bitset_is_empty (new_selection_set))
+    if (!gtk_bitset_is_empty (new_selection_set) && !(self->managed_context && auto_selection))
     {
         guint first_position = gtk_bitset_get_nth (new_selection_set, 0);
 
@@ -1277,6 +1279,14 @@ nautilus_files_view_activate_files (NautilusFilesView *view,
                                     NautilusOpenFlags  flags,
                                     gboolean           confirm_multiple)
 {
+    if (view->managed_context && flags == 0 && files != NULL && files->next == NULL &&
+        nautilus_file_is_directory (files->data))
+    {
+        gboolean handled = FALSE;
+        g_signal_emit_by_name (view, "column-activate-directory", files->data, &handled);
+        if (handled) { return; }
+    }
+
     if (nautilus_window_slot_handle_activate_files (view->slot, files))
     {
         return;
@@ -3344,6 +3354,8 @@ nautilus_files_view_finalize (GObject *object)
     g_clear_object (&self->templates_menu);
     g_clear_object (&self->scripts_menu);
     /* We don't own the slot, so no unref */
+    g_clear_object (&self->branch_file);
+    g_clear_error (&self->column_load_error);
     self->slot = NULL;
 
     g_free (self->toolbar_menu_sections);
@@ -3678,6 +3690,21 @@ static void
 nautilus_files_view_update_status_overlay (NautilusFilesView *self)
 {
     AdwStatusPage *status_page = ADW_STATUS_PAGE (self->empty_view_page);
+
+    if (self->managed_context && !self->loading && self->directory_as_file != NULL &&
+        (self->column_load_error != NULL || !nautilus_file_can_read (self->directory_as_file)))
+    {
+        adw_status_page_set_icon_name (status_page, "dialog-warning-symbolic");
+        adw_status_page_set_title (status_page, _("Cannot Open Folder"));
+        adw_status_page_set_description (status_page, self->column_load_error != NULL ?
+            self->column_load_error->message : _("You do not have permission to view this folder."));
+        GtkWidget *retry = gtk_button_new_with_mnemonic (_("_Retry"));
+        gtk_widget_set_halign (retry, GTK_ALIGN_CENTER);
+        gtk_actionable_set_action_name (GTK_ACTIONABLE (retry), "view.miller-retry");
+        adw_status_page_set_child (status_page, retry);
+        gtk_widget_set_visible (self->empty_view_page, TRUE);
+        return;
+    }
 
     if (!self->loading &&
         nautilus_files_view_is_empty (self))
@@ -4646,6 +4673,15 @@ load_error_callback (NautilusDirectory *directory,
 {
     NautilusFilesView *view = NAUTILUS_FILES_VIEW (callback_data);
 
+    if (view->managed_context)
+    {
+        g_clear_error (&view->column_load_error);
+        view->column_load_error = g_error_copy (error);
+        nautilus_files_view_stop_loading (view);
+        nautilus_files_view_update_status_overlay (view);
+        return;
+    }
+
     /* FIXME: By doing a stop, we discard some pending files. Is
      * that OK?
      */
@@ -4699,7 +4735,7 @@ nautilus_files_view_add_subdirectory (NautilusFilesView *self,
 
     nautilus_directory_file_monitor_add (directory,
                                          &self->directory,
-                                         self->show_hidden_files,
+                                         self->show_hidden_files || self->managed_context,
                                          attributes,
                                          files_added_callback, self);
 
@@ -6810,6 +6846,17 @@ action_remove_recent_server (GSimpleAction *action,
     }
 }
 
+static void
+action_miller_retry (GSimpleAction *action, GVariant *parameter, gpointer data)
+{
+    NautilusFilesView *self = data;
+    if (self->location != NULL)
+    {
+        g_autoptr (GFile) location = g_object_ref (self->location);
+        nautilus_files_view_set_location (self, location);
+    }
+}
+
 const GActionEntry view_entries[] =
 {
     /* Toolbar menu */
@@ -6817,6 +6864,7 @@ const GActionEntry view_entries[] =
     { .name = "zoom-out", .activate = action_zoom_out },
     { .name = "zoom-standard", .activate = action_zoom_standard },
     { .name = "sort", .parameter_type = "(sb)", .state = "('invalid',false)", .change_state = action_sort_order_changed },
+    { .name = "miller-retry", .activate = action_miller_retry },
     { .name = "show-hidden-files", .state = "true", .change_state = action_show_hidden_files },
     { .name = "visible-columns", .activate = action_visible_columns },
     { .name = "visible-captions", .activate = action_visible_captions },
@@ -8471,6 +8519,7 @@ load_directory (NautilusFilesView *self,
     g_assert (NAUTILUS_IS_FILES_VIEW (self));
     g_assert (NAUTILUS_IS_DIRECTORY (directory));
 
+    g_clear_error (&self->column_load_error);
     nautilus_files_view_stop_loading (self);
 
     /* To make search feel fast and smooth as if it were filtering the current
@@ -8587,7 +8636,7 @@ finish_loading (NautilusFilesView *self)
 
     nautilus_directory_file_monitor_add (self->directory,
                                          &self->directory,
-                                         self->show_hidden_files,
+                                         self->show_hidden_files || self->managed_context,
                                          attributes,
                                          files_added_callback, self);
 
@@ -8732,7 +8781,7 @@ static gboolean
 nautilus_files_view_should_show_file (NautilusFilesView *self,
                                       NautilusFile      *file)
 {
-    return nautilus_file_should_show (file,
+    return file == self->branch_file || nautilus_file_should_show (file,
                                       self->show_hidden_files);
 }
 
@@ -9374,6 +9423,9 @@ nautilus_files_view_class_init (NautilusFilesViewClass *klass)
      * Emitted when changes happen to files that were in selection.
      *
      */
+    g_signal_new ("column-activate-directory", G_TYPE_FROM_CLASS (klass), G_SIGNAL_RUN_LAST,
+                  0, g_signal_accumulator_true_handled, NULL, NULL, G_TYPE_BOOLEAN, 1, NAUTILUS_TYPE_FILE);
+
     signals[SELECTION_CHANGED] =
         g_signal_new_class_handler ("selection-changed",
                                     G_TYPE_FROM_CLASS (klass),
@@ -9797,4 +9849,15 @@ NautilusListBase *
 nautilus_files_view_get_private_list_base (NautilusFilesView *self)
 {
     return self->list_base;
+}
+
+void
+nautilus_files_view_set_branch_file (NautilusFilesView *self, NautilusFile *file)
+{
+    gboolean hidden_changed = (self->branch_file != NULL && nautilus_file_is_hidden_file (self->branch_file)) ||
+                              (file != NULL && nautilus_file_is_hidden_file (file));
+    if (g_set_object (&self->branch_file, file) && hidden_changed && self->directory != NULL)
+    {
+        load_directory (self, self->directory);
+    }
 }

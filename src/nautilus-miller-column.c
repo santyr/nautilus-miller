@@ -148,9 +148,23 @@ model_changed (NautilusMillerColumn *self)
     }
 }
 
+static gboolean
+miller_grab_focus (GtkWidget *widget)
+{
+    NautilusViewModel *model = nautilus_list_base_get_model (NAUTILUS_LIST_BASE (widget));
+    if (model == NULL || g_list_model_get_n_items (G_LIST_MODEL (model)) == 0)
+    {
+        GtkWidget *scroller = nautilus_list_base_get_scrolled_window (NAUTILUS_LIST_BASE (widget));
+        gtk_widget_set_focusable (scroller, TRUE);
+        return gtk_widget_grab_focus (scroller);
+    }
+    return GTK_WIDGET_CLASS (nautilus_miller_column_parent_class)->grab_focus (widget);
+}
+
 static void
 nautilus_miller_column_class_init (NautilusMillerColumnClass *klass)
 {
+    GTK_WIDGET_CLASS (klass)->grab_focus = miller_grab_focus;
     NautilusListBaseClass *base = NAUTILUS_LIST_BASE_CLASS (klass);
     base->get_view_info = get_view_info;
     base->get_icon_size = get_icon_size;
