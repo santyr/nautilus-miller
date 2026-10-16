@@ -158,6 +158,8 @@ libnautilus_sources = [
   'nautilus-miller-view.h',
   'nautilus-miller-widths.c',
   'nautilus-miller-widths.h',
+  'nautilus-miller-typeahead.c',
+  'nautilus-miller-typeahead.h',
   'nautilus-minimal-cell.c',
   'nautilus-minimal-cell.h',
   'nautilus-module.c',
