@@ -28,7 +28,7 @@ Authority: [completion goal](finder-completion-goal.md), sections 3–9. This co
 
 Logical ancestry stays complete to the GIO root. Initially keep displayed ancestor policy unchanged; profile models before resource changes. Reveal only the relevant column/pair after user navigation, never snap right after background updates. Pointer scrolling remains intentional.
 
-Use 280 px default directory width, 180–1200 px bounds; independent preview width. Persist default and at most 128 per-location width overrides with oldest-use eviction in bounded XDG state. Never save credentials or query/fragment-bearing URIs; remote locations without safe identity receive default widths. Fit measures a bounded sample of already loaded rows; never synchronous directory enumeration. Offer fit, reset and keyboard-operable resize controls with names and current values.
+Use 280 px default directory width, 180–1200 px bounds; independent preview width. Persist default and at most 128 per-location width overrides with oldest-use eviction in profile-specific GSettings (XDG settings storage). Reading a remembered location refreshes its recency. Safe identities are local file URIs and SFTP/SMB URIs with a host, no userinfo/query/fragment and at most4096 bytes; other locations use default widths without a saved key. Sanitize unsafe/invalid/duplicate legacy entries on access. Fit measures at most128 evenly spaced already loaded rows; never synchronous directory enumeration. Offer fit, reset, use-as-default and keyboard-operable numeric resize controls with names and current values. Existing live columns retain their current width when another column changes the default; newly created columns use the new default.
 
 ## Preview policy
 

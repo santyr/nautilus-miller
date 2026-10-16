@@ -7,6 +7,7 @@
 #include "nautilus-files-view.h"
 #include "nautilus-global-preferences.h"
 #include "nautilus-miller-view.h"
+#include "nautilus-miller-widths.h"
 #include "nautilus-resources.h"
 #include "nautilus-tag-manager.h"
 #include "nautilus-window-slot.h"
@@ -409,6 +410,120 @@ wait_frame (GtkWidget *widget)
     if (!painted) { g_test_message ("The session did not paint a frame within the snapshot timeout"); }
 }
 
+static GtkWidget *find_widget_type (GtkWidget *widget, GType type);
+
+static GtkWidget *
+find_button_label (GtkWidget *widget, const char *label)
+{
+    if (GTK_IS_BUTTON (widget) && g_strcmp0 (gtk_button_get_label (GTK_BUTTON (widget)), label) == 0)
+    {
+        return widget;
+    }
+    for (GtkWidget *child = gtk_widget_get_first_child (widget); child != NULL;
+         child = gtk_widget_get_next_sibling (child))
+    {
+        GtkWidget *found = find_button_label (child, label);
+        if (found != NULL) { return found; }
+    }
+    return NULL;
+}
+
+static void
+test_column_width_controls (void)
+{
+    g_settings_reset (nautilus_preferences, MILLER_DEFAULT_WIDTH_KEY);
+    g_settings_reset (nautilus_preferences, MILLER_WIDTHS_KEY);
+    g_autoptr (GFile) root = g_file_new_for_path (test_get_tmp_dir ());
+    g_autoptr (GFile) outside = g_file_get_parent (root);
+    g_autofree char *long_name = g_strnfill (120, 'W');
+    g_autoptr (GFile) long_file = g_file_get_child (root, long_name);
+    g_assert_true (g_file_replace_contents (long_file, "fit", 3, NULL, FALSE, 0, NULL, NULL, NULL));
+    nautilus_miller_width_set (nautilus_preferences, root, 460);
+    g_autoptr (NautilusWindowSlot) slot = nautilus_window_slot_new (NAUTILUS_MODE_BROWSE);
+    g_autoptr (NautilusMillerView) strip = g_object_ref_sink (nautilus_miller_view_new (slot));
+    GtkWidget *window = gtk_window_new ();
+    gtk_window_set_default_size (GTK_WINDOW (window), 900, 600);
+    gtk_window_set_child (GTK_WINDOW (window), GTK_WIDGET (strip));
+    nautilus_miller_view_set_location (strip, root, NULL);
+    gtk_window_present (GTK_WINDOW (window));
+    settle (strip);
+    wait_frame (window);
+    NautilusFilesView *view = nautilus_miller_view_get_active_view (strip);
+    GtkWidget *box = gtk_widget_get_parent (GTK_WIDGET (view));
+    int width;
+    gtk_widget_get_size_request (box, &width, NULL);
+    g_assert_cmpint (width, ==, 460);
+    GtkWidget *menu = find_widget_type (box, GTK_TYPE_MENU_BUTTON);
+    g_assert_nonnull (menu);
+    GtkWidget *popover = GTK_WIDGET (gtk_menu_button_get_popover (GTK_MENU_BUTTON (menu)));
+    GtkWidget *spin = find_widget_type (popover, GTK_TYPE_SPIN_BUTTON);
+    g_assert_nonnull (spin);
+    if (g_strcmp0 (g_getenv ("GTK_A11Y"), "test") == 0)
+    {
+        gtk_test_accessible_assert_property (spin, GTK_ACCESSIBLE_PROPERTY_LABEL, "Column Width");
+        gtk_test_accessible_assert_property (menu, GTK_ACCESSIBLE_PROPERTY_LABEL, "Column Options");
+    }
+    gtk_spin_button_set_value (GTK_SPIN_BUTTON (spin), 560);
+    gtk_widget_get_size_request (box, &width, NULL);
+    g_assert_cmpint (width, ==, 560);
+    g_assert_cmpint (nautilus_miller_width_get (nautilus_preferences, root), ==, 560);
+    GtkWidget *fit = find_button_label (popover, "Fit to Contents");
+    GtkWidget *reset = find_button_label (popover, "Reset Width");
+    GtkWidget *use_default = find_button_label (popover, "Use as Default");
+    g_assert_nonnull (fit);
+    g_assert_nonnull (reset);
+    g_assert_nonnull (use_default);
+    g_signal_emit_by_name (reset, "clicked");
+    g_assert_cmpint (gtk_spin_button_get_value_as_int (GTK_SPIN_BUTTON (spin)), ==, 280);
+    g_signal_emit_by_name (fit, "clicked");
+    width = gtk_spin_button_get_value_as_int (GTK_SPIN_BUTTON (spin));
+    g_assert_cmpint (width, >, 280);
+    g_assert_cmpint (width, <=, 1200);
+    gtk_spin_button_set_value (GTK_SPIN_BUTTON (spin), 570);
+    g_signal_emit_by_name (use_default, "clicked");
+    g_assert_cmpuint (g_settings_get_uint (nautilus_preferences, MILLER_DEFAULT_WIDTH_KEY), ==, 570);
+    g_assert_true (nautilus_miller_view_get_active_view (strip) == view);
+    g_assert_true (g_file_equal (nautilus_miller_view_get_location (strip), root));
+
+    GtkWidget *grip = gtk_widget_get_next_sibling (box);
+    g_autoptr (GListModel) controllers = gtk_widget_observe_controllers (grip);
+    gtk_widget_set_direction (GTK_WIDGET (strip), GTK_TEXT_DIR_RTL);
+    gboolean dragged = FALSE;
+    for (guint i = 0; i < g_list_model_get_n_items (controllers); i++)
+    {
+        g_autoptr (GtkEventController) controller = g_list_model_get_item (controllers, i);
+        if (GTK_IS_GESTURE_DRAG (controller))
+        {
+            g_signal_emit_by_name (controller, "drag-begin", 0.0, 0.0);
+            g_signal_emit_by_name (controller, "drag-update", 100.0, 0.0);
+            g_signal_emit_by_name (controller, "drag-end", 100.0, 0.0);
+            g_assert_cmpint (nautilus_miller_width_get (nautilus_preferences, root), ==, 470);
+            dragged = TRUE;
+        }
+    }
+    g_assert_true (dragged);
+    gtk_menu_button_popup (GTK_MENU_BUTTON (menu));
+    g_object_ref (spin);
+    g_object_ref (reset);
+    nautilus_miller_view_set_location (strip, outside, NULL);
+    settle (strip);
+    /* A retained old popup/control cannot publish through a freed column. */
+    gtk_spin_button_set_value (GTK_SPIN_BUTTON (spin), 800);
+    g_signal_emit_by_name (reset, "clicked");
+    g_assert_cmpint (nautilus_miller_width_get (nautilus_preferences, root), ==, 470);
+    g_object_unref (spin);
+    g_object_unref (reset);
+    nautilus_miller_view_set_location (strip, root, NULL);
+    settle (strip);
+    box = gtk_widget_get_parent (GTK_WIDGET (nautilus_miller_view_get_active_view (strip)));
+    gtk_widget_get_size_request (box, &width, NULL);
+    g_assert_cmpint (width, ==, 470);
+    gtk_window_destroy (GTK_WINDOW (window));
+    g_settings_reset (nautilus_preferences, MILLER_DEFAULT_WIDTH_KEY);
+    g_settings_reset (nautilus_preferences, MILLER_WIDTHS_KEY);
+    test_clear_tmp_dir ();
+}
+
 static void
 save_window_snapshot (GtkWidget *window)
 {
@@ -771,6 +886,7 @@ main (int argc, char **argv)
     g_test_add_func ("/miller/view/error-is-local", test_error_is_local);
     g_test_add_func ("/miller/view/keyboard-and-focus", test_keyboard_and_focus);
     g_test_add_func ("/miller/view/automatic-selection-revealed", test_automatic_selection_revealed);
+    g_test_add_func ("/miller/view/width-controls", test_column_width_controls);
     g_test_add_func ("/miller/view/context-menu-action-owner", test_context_menu_owns_its_actions);
     g_test_add_func ("/miller/view/new-folder-parent-context", test_new_folder_captures_parent_context);
     g_test_add_func ("/miller/view/branch-selection", test_branch_selection);

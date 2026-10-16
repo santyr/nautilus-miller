@@ -395,7 +395,8 @@ rubberband {
 .nautilus-miller-column listview { padding: 2px; }
 .nautilus-miller-column listview > row { border-radius: 4px; padding: 2px 6px; }
 .nautilus-miller-column .column-name-labels-box { min-width: 0; }
-.nautilus-miller-view .miller-heading { padding: 7px 10px; font-weight: bold; border-bottom: 1px solid var(--border-color); }
+.nautilus-miller-view .miller-heading { padding: 4px 10px; border-bottom: 1px solid var(--border-color); }
+.nautilus-miller-view .miller-heading > label { font-weight: bold; }
 .nautilus-miller-view .miller-separator { min-width: 5px; background: var(--border-color); }
 .nautilus-miller-view .miller-directory { min-width: 180px; }
 .nautilus-miller-view statuspage { padding: 0; }

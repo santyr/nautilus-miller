@@ -7,6 +7,9 @@
 #include "nautilus-view-model.h"
 #include "nautilus-view-info.h"
 #include "nautilus-window-slot.h"
+#include "nautilus-global-preferences.h"
+#include "nautilus-miller-widths.h"
+#include "nautilus-view-item.h"
 #include <glib/gi18n.h>
 
 typedef struct
@@ -18,6 +21,11 @@ typedef struct
     NautilusFileList *observed_selection;
     GtkWidget *box;
     GtkWidget *grip;
+    GtkMenuButton *options;
+    GtkSpinButton *width_spin;
+    GtkWidget *fit_button;
+    GtkWidget *reset_button;
+    GtkWidget *default_button;
     guint selection_idle;
     int width;
     int drag_width;
@@ -211,11 +219,136 @@ drag_begin (GtkGestureDrag *gesture, double x, double y, MillerColumn *column)
     column->drag_width = column->width;
 }
 
+static void width_changed (GtkSpinButton *spin, MillerColumn *column);
+
+static void
+set_width (MillerColumn *column, int width, gboolean persist)
+{
+    column->width = CLAMP (width, MILLER_MIN_WIDTH, MILLER_MAX_WIDTH);
+    gtk_widget_set_size_request (column->box, column->width, -1);
+    g_signal_handlers_block_by_func (column->width_spin, width_changed, column);
+    gtk_spin_button_set_value (column->width_spin, column->width);
+    g_signal_handlers_unblock_by_func (column->width_spin, width_changed, column);
+    if (persist)
+    {
+        nautilus_miller_width_set (nautilus_preferences, column->location, column->width);
+    }
+}
+
+static void
+width_changed (GtkSpinButton *spin, MillerColumn *column)
+{
+    set_width (column, gtk_spin_button_get_value_as_int (spin), TRUE);
+}
+
 static void
 drag_update (GtkGestureDrag *gesture, double x, double y, MillerColumn *column)
 {
-    column->width = CLAMP (column->drag_width + (int) x, 180, 1200);
-    gtk_widget_set_size_request (column->box, column->width, -1);
+    int direction = gtk_widget_get_direction (GTK_WIDGET (column->owner)) == GTK_TEXT_DIR_RTL ? -1 : 1;
+    set_width (column, column->drag_width + direction * (int) CLAMP (x, -2400, 2400), FALSE);
+}
+
+static void
+drag_end (GtkGestureDrag *gesture, double x, double y, MillerColumn *column)
+{
+    nautilus_miller_width_set (nautilus_preferences, column->location, column->width);
+}
+
+static void
+fit_width (GtkButton *button, MillerColumn *column)
+{
+    NautilusViewModel *model = nautilus_files_view_get_private_model (column->view);
+    guint count = g_list_model_get_n_items (G_LIST_MODEL (model));
+    guint samples = MIN (count, 128);
+    int width = MILLER_MIN_WIDTH;
+    g_autoptr (PangoLayout) layout = gtk_widget_create_pango_layout (column->box, NULL);
+    for (guint i = 0; i < samples; i++)
+    {
+        guint position = samples == 1 ? 0 : (guint64) i * (count - 1) / (samples - 1);
+        g_autoptr (GtkTreeListRow) row = g_list_model_get_item (G_LIST_MODEL (model), position);
+        g_autoptr (NautilusViewItem) item = gtk_tree_list_row_get_item (row);
+        const char *name = nautilus_file_get_display_name (nautilus_view_item_get_file (item));
+        int text_width;
+        pango_layout_set_text (layout, name, -1);
+        pango_layout_get_pixel_size (layout, &text_width, NULL);
+        width = MAX (width, text_width + 96); /* icon, disclosure and row padding */
+        if (width >= MILLER_MAX_WIDTH) { break; }
+    }
+    set_width (column, width, TRUE);
+}
+
+static void
+reset_width (GtkButton *button, MillerColumn *column)
+{
+    nautilus_miller_width_reset (nautilus_preferences, column->location);
+    set_width (column, nautilus_miller_width_get (nautilus_preferences, column->location), FALSE);
+}
+
+static void
+use_default_width (GtkButton *button, MillerColumn *column)
+{
+    g_settings_set_uint (nautilus_preferences, MILLER_DEFAULT_WIDTH_KEY, column->width);
+}
+
+static GtkWidget *
+column_heading (MillerColumn *column, const char *name)
+{
+    GtkWidget *heading = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 4);
+    gtk_widget_add_css_class (heading, "miller-heading");
+    GtkWidget *label = gtk_label_new (name);
+    gtk_label_set_ellipsize (GTK_LABEL (label), PANGO_ELLIPSIZE_MIDDLE);
+    gtk_widget_set_tooltip_text (label, name);
+    gtk_widget_set_hexpand (label, TRUE);
+    gtk_label_set_xalign (GTK_LABEL (label), 0.0);
+    gtk_box_append (GTK_BOX (heading), label);
+    column->options = GTK_MENU_BUTTON (gtk_menu_button_new ());
+    gtk_menu_button_set_icon_name (column->options, "view-more-symbolic");
+    gtk_widget_add_css_class (GTK_WIDGET (column->options), "flat");
+    gtk_widget_set_tooltip_text (GTK_WIDGET (column->options), _("Column Options"));
+    gtk_accessible_update_property (GTK_ACCESSIBLE (column->options),
+                                    GTK_ACCESSIBLE_PROPERTY_LABEL, _("Column Options"), -1);
+    GtkWidget *popover = gtk_popover_new ();
+    GtkWidget *content = gtk_box_new (GTK_ORIENTATION_VERTICAL, 8);
+    gtk_widget_set_margin_top (content, 12);
+    gtk_widget_set_margin_bottom (content, 12);
+    gtk_widget_set_margin_start (content, 12);
+    gtk_widget_set_margin_end (content, 12);
+    GtkWidget *row = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
+    GtkWidget *width_label = gtk_label_new_with_mnemonic (_("_Width (pixels)"));
+    column->width_spin = GTK_SPIN_BUTTON (gtk_spin_button_new_with_range (MILLER_MIN_WIDTH, MILLER_MAX_WIDTH, 10));
+    gtk_spin_button_set_value (column->width_spin, column->width);
+    gtk_spin_button_set_numeric (column->width_spin, TRUE);
+    gtk_label_set_mnemonic_widget (GTK_LABEL (width_label), GTK_WIDGET (column->width_spin));
+    gtk_accessible_update_property (GTK_ACCESSIBLE (column->width_spin),
+                                    GTK_ACCESSIBLE_PROPERTY_LABEL, _("Column Width"), -1);
+    gtk_box_append (GTK_BOX (row), width_label);
+    gtk_box_append (GTK_BOX (row), GTK_WIDGET (column->width_spin));
+    gtk_box_append (GTK_BOX (content), row);
+    column->fit_button = gtk_button_new_with_label (_("Fit to Contents"));
+    column->reset_button = gtk_button_new_with_label (_("Reset Width"));
+    column->default_button = gtk_button_new_with_label (_("Use as Default"));
+    gtk_box_append (GTK_BOX (content), column->fit_button);
+    gtk_box_append (GTK_BOX (content), column->reset_button);
+    gtk_box_append (GTK_BOX (content), column->default_button);
+    gtk_popover_set_child (GTK_POPOVER (popover), content);
+    gtk_menu_button_set_popover (column->options, popover);
+    gtk_box_append (GTK_BOX (heading), GTK_WIDGET (column->options));
+    g_signal_connect (column->width_spin, "value-changed", G_CALLBACK (width_changed), column);
+    g_signal_connect (column->fit_button, "clicked", G_CALLBACK (fit_width), column);
+    g_signal_connect (column->reset_button, "clicked", G_CALLBACK (reset_width), column);
+    g_signal_connect (column->default_button, "clicked", G_CALLBACK (use_default_width), column);
+    return heading;
+}
+
+static void
+disconnect_column_controllers (GtkWidget *widget, MillerColumn *column)
+{
+    g_autoptr (GListModel) controllers = gtk_widget_observe_controllers (widget);
+    for (guint i = 0; i < g_list_model_get_n_items (controllers); i++)
+    {
+        g_autoptr (GtkEventController) controller = g_list_model_get_item (controllers, i);
+        g_signal_handlers_disconnect_by_data (controller, column);
+    }
 }
 
 static void
@@ -224,6 +357,20 @@ column_free (gpointer data)
     MillerColumn *column = data;
     g_clear_handle_id (&column->selection_idle, g_source_remove);
     g_signal_handlers_disconnect_by_data (column->view, column);
+    disconnect_column_controllers (GTK_WIDGET (column->view), column);
+    disconnect_column_controllers (column->grip, column);
+    g_signal_handlers_disconnect_by_data (column->width_spin, column);
+    g_signal_handlers_disconnect_by_data (column->fit_button, column);
+    g_signal_handlers_disconnect_by_data (column->reset_button, column);
+    g_signal_handlers_disconnect_by_data (column->default_button, column);
+    GtkRoot *root = gtk_widget_get_root (column->box);
+    GtkWidget *focused = root != NULL ? gtk_root_get_focus (root) : NULL;
+    if (focused != NULL && gtk_widget_is_ancestor (focused, column->box))
+    {
+        gtk_root_set_focus (root, NULL);
+    }
+    /* No popdown animation may outlive the directory and its focused editor. */
+    gtk_widget_set_visible (GTK_WIDGET (gtk_menu_button_get_popover (column->options)), FALSE);
     nautilus_files_view_set_action_context (column->view, FALSE);
     nautilus_files_view_stop_loading (column->view);
     gtk_box_remove (column->owner->strip, column->box);
@@ -284,7 +431,7 @@ column_new (NautilusMillerView *self, GFile *location)
     MillerColumn *column = g_new0 (MillerColumn, 1);
     column->owner = self;
     column->location = g_object_ref (location);
-    column->width = 280;
+    column->width = nautilus_miller_width_get (nautilus_preferences, location);
     column->view = nautilus_files_view_new (NAUTILUS_VIEW_MILLER_ID, self->slot);
     nautilus_files_view_set_managed_context (column->view, TRUE);
     gtk_widget_add_css_class (GTK_WIDGET (column->view), "miller-file-view");
@@ -293,10 +440,8 @@ column_new (NautilusMillerView *self, GFile *location)
     gtk_widget_set_vexpand (column->box, TRUE);
     gtk_widget_add_css_class (column->box, "miller-directory");
     g_autofree char *basename = g_file_get_basename (location);
-    GtkWidget *label = gtk_label_new (basename != NULL && basename[0] != '\0' ? basename : "/");
-    gtk_label_set_ellipsize (GTK_LABEL (label), PANGO_ELLIPSIZE_MIDDLE);
-    gtk_widget_add_css_class (label, "miller-heading");
-    gtk_box_append (GTK_BOX (column->box), label);
+    gtk_box_append (GTK_BOX (column->box), column_heading (column,
+        basename != NULL && basename[0] != '\0' ? basename : "/"));
     gtk_box_append (GTK_BOX (column->box), GTK_WIDGET (column->view));
     gtk_widget_set_vexpand (GTK_WIDGET (column->view), TRUE);
     gtk_accessible_update_property (GTK_ACCESSIBLE (column->view), GTK_ACCESSIBLE_PROPERTY_LABEL,
@@ -307,6 +452,7 @@ column_new (NautilusMillerView *self, GFile *location)
     GtkGesture *drag = gtk_gesture_drag_new ();
     g_signal_connect (drag, "drag-begin", G_CALLBACK (drag_begin), column);
     g_signal_connect (drag, "drag-update", G_CALLBACK (drag_update), column);
+    g_signal_connect (drag, "drag-end", G_CALLBACK (drag_end), column);
     gtk_widget_add_controller (column->grip, GTK_EVENT_CONTROLLER (drag));
     GtkEventController *focus = gtk_event_controller_focus_new ();
     g_signal_connect (focus, "enter", G_CALLBACK (focus_enter), column);
