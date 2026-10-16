@@ -132,3 +132,6 @@ NautilusListBase *
 nautilus_files_view_get_private_list_base (NautilusFilesView *self);
 
 G_END_DECLS
+
+void nautilus_files_view_set_managed_context (NautilusFilesView *self, gboolean managed);
+void nautilus_files_view_set_action_context (NautilusFilesView *self, gboolean active);

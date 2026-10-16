@@ -51,6 +51,7 @@ struct _NautilusListBasePrivate
 
     gboolean dnd_disabled;
     gboolean single_click_mode;
+    gboolean single_click_activation_disabled;
 
     gboolean activate_on_release;
     gboolean deny_background_click;
@@ -262,7 +263,7 @@ on_item_click_pressed (GtkGestureClick *gesture,
 
     /* Before anything else, store event state to be read by other handlers. */
     priv->deny_background_click = TRUE;
-    priv->activate_on_release = (priv->single_click_mode &&
+    priv->activate_on_release = ((priv->single_click_mode && !priv->single_click_activation_disabled) &&
                                  button == GDK_BUTTON_PRIMARY &&
                                  n_press == 1 &&
                                  !selection_mode);
@@ -271,7 +272,7 @@ on_item_click_pressed (GtkGestureClick *gesture,
 
     /* It's safe to claim event sequence on press in the following cases because
      * they don't interfere with touch scrolling. */
-    if (button == GDK_BUTTON_PRIMARY && n_press == 2 && !priv->single_click_mode)
+    if (button == GDK_BUTTON_PRIMARY && n_press == 2 && !(priv->single_click_mode && !priv->single_click_activation_disabled))
     {
         /* If Ctrl + Shift are held, we don't want to activate selection. But
          * we still need to claim the event, otherwise GtkListBase's default
@@ -1459,4 +1460,11 @@ nautilus_list_base_setup_directory (NautilusListBase  *self,
                                     NautilusDirectory *directory)
 {
     NAUTILUS_LIST_BASE_CLASS (G_OBJECT_GET_CLASS (self))->setup_directory (self, directory);
+}
+
+void
+nautilus_list_base_disable_single_click_activation (NautilusListBase *self)
+{
+    NautilusListBasePrivate *priv = nautilus_list_base_get_instance_private (self);
+    priv->single_click_activation_disabled = TRUE;
 }

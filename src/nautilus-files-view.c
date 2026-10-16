@@ -57,6 +57,7 @@
 #include "nautilus-grid-view-captions-dialog.h"
 #include "nautilus-icon-info.h"
 #include "nautilus-list-view.h"
+#include "nautilus-miller-column.h"
 #include "nautilus-metadata.h"
 #include "nautilus-mime-actions.h"
 #include "nautilus-network-view.h"
@@ -196,6 +197,7 @@ struct _NautilusFilesView
 
     /* whether we are in the active slot */
     gboolean active;
+    gboolean managed_context;
 
     /* loading indicates whether this view has begun loading a directory.
      * This flag should need not be set inside subclasses. NautilusFilesView automatically
@@ -3034,40 +3036,44 @@ remove_directory_from_templates_directory_list (NautilusFilesView *self,
                                           G_CALLBACK (templates_added_or_changed_callback));
 }
 
-static void
-slot_active_changed (NautilusWindowSlot *slot,
-                     GParamSpec         *pspec,
-                     NautilusFilesView  *view)
+void
+nautilus_files_view_set_action_context (NautilusFilesView *view, gboolean active)
 {
-    if (view->active == nautilus_window_slot_get_active (slot))
+    GtkRoot *root = gtk_widget_get_root (GTK_WIDGET (view));
+    view->active = active;
+    if (root == NULL) { return; }
+    if (active)
     {
-        return;
-    }
-
-    view->active = nautilus_window_slot_get_active (slot);
-
-    if (view->active)
-    {
-        /* Avoid updating the toolbar withouth making sure the toolbar
-         * zoom slider has the correct adjustment that changes when the
-         * view mode changes
-         */
         nautilus_files_view_update_context_menus (view);
         nautilus_files_view_update_toolbar_menus (view);
-        nautilus_files_view_preview_update (view);
-
         schedule_update_context_menus (view);
-
-        gtk_widget_insert_action_group (GTK_WIDGET (gtk_widget_get_root (GTK_WIDGET (view))),
-                                        "view",
-                                        G_ACTION_GROUP (view->view_action_group));
+        g_object_set_data (G_OBJECT (root), "nautilus-active-file-view", view);
+        gtk_widget_insert_action_group (GTK_WIDGET (root), "view", view->view_action_group);
     }
     else
     {
         remove_update_context_menus_timeout_callback (view);
-        gtk_widget_insert_action_group (GTK_WIDGET (gtk_widget_get_root (GTK_WIDGET (view))),
-                                        "view",
-                                        NULL);
+        if (g_object_get_data (G_OBJECT (root), "nautilus-active-file-view") == view)
+        {
+            gtk_widget_insert_action_group (GTK_WIDGET (root), "view", NULL);
+            g_object_set_data (G_OBJECT (root), "nautilus-active-file-view", NULL);
+        }
+    }
+}
+
+void
+nautilus_files_view_set_managed_context (NautilusFilesView *view, gboolean managed)
+{
+    if (managed) { nautilus_files_view_set_action_context (view, FALSE); }
+    view->managed_context = managed;
+}
+
+static void
+slot_active_changed (NautilusWindowSlot *slot, GParamSpec *pspec, NautilusFilesView *view)
+{
+    if (!view->managed_context)
+    {
+        nautilus_files_view_set_action_context (view, nautilus_window_slot_get_active (slot));
     }
 }
 
@@ -8945,6 +8951,8 @@ on_parent_changed (GObject    *object,
     NautilusFilesView *self = NAUTILUS_FILES_VIEW (object);
     GtkWidget *parent;
 
+    if (self->managed_context) { return; }
+
     widget = GTK_WIDGET (object);
 
     parent = gtk_widget_get_parent (widget);
@@ -9608,6 +9616,12 @@ create_inner_view (NautilusFilesView *self,
 
     switch (id)
     {
+        case NAUTILUS_VIEW_MILLER_ID:
+        {
+            self->list_base = NAUTILUS_LIST_BASE (nautilus_miller_column_new ());
+        }
+        break;
+
         case NAUTILUS_VIEW_GRID_ID:
         {
             self->list_base = NAUTILUS_LIST_BASE (nautilus_grid_view_new ());
@@ -9660,6 +9674,7 @@ nautilus_files_view_get_toggle_icon_name (NautilusFilesView *self)
         }
         break;
 
+        case NAUTILUS_VIEW_MILLER_ID:
         case NAUTILUS_VIEW_NETWORK_ID:
         case NAUTILUS_VIEW_GRID_ID:
         {
@@ -9693,6 +9708,7 @@ nautilus_files_view_get_toggle_tooltip (NautilusFilesView *self)
         }
         break;
 
+        case NAUTILUS_VIEW_MILLER_ID:
         case NAUTILUS_VIEW_NETWORK_ID:
         case NAUTILUS_VIEW_GRID_ID:
         {

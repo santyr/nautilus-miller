@@ -864,6 +864,56 @@ test_load_dir (void)
     test_clear_tmp_dir ();
 }
 
+static void
+test_miller_column (void)
+{
+    g_autoptr (NautilusWindowSlot) slot = nautilus_window_slot_new (NAUTILUS_MODE_BROWSE);
+    g_autoptr (NautilusFilesView) view = nautilus_files_view_new (4, slot);
+    g_autoptr (GFile) location = g_file_new_for_path (test_get_tmp_dir ());
+    create_multiple_files ("miller_column", 3);
+    nautilus_files_view_set_location (view, location);
+    ITER_CONTEXT_WHILE (nautilus_files_view_get_loading (view));
+    g_assert_cmpuint (nautilus_files_view_get_view_id (view), ==, 4);
+    g_assert_cmpuint (g_list_model_get_n_items (G_LIST_MODEL (nautilus_files_view_get_private_model (view))), ==, 4);
+    test_clear_tmp_dir ();
+}
+
+static void
+test_miller_action_context (void)
+{
+    g_autoptr (NautilusWindowSlot) slot = nautilus_window_slot_new (NAUTILUS_MODE_BROWSE);
+    g_autoptr (NautilusFilesView) first = nautilus_files_view_new (4, slot);
+    g_autoptr (NautilusFilesView) second = nautilus_files_view_new (4, slot);
+    g_autoptr (GFile) location = g_file_new_for_path (test_get_tmp_dir ());
+    create_multiple_files ("miller_context", 2);
+    nautilus_files_view_set_managed_context (first, TRUE);
+    nautilus_files_view_set_managed_context (second, TRUE);
+    GtkWidget *window = gtk_window_new ();
+    GtkWidget *box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 0);
+    gtk_window_set_child (GTK_WINDOW (window), box);
+    gtk_box_append (GTK_BOX (box), GTK_WIDGET (first));
+    gtk_box_append (GTK_BOX (box), GTK_WIDGET (second));
+    nautilus_files_view_set_location (first, location);
+    nautilus_files_view_set_location (second, location);
+    ITER_CONTEXT_WHILE (nautilus_files_view_get_loading (first) || nautilus_files_view_get_loading (second));
+    nautilus_files_view_set_action_context (first, TRUE);
+    g_assert_true (gtk_widget_activate_action (window, "view.select-all", NULL));
+    g_autolist (NautilusFile) selected_first = nautilus_files_view_get_selection (first);
+    g_autolist (NautilusFile) selected_second = nautilus_files_view_get_selection (second);
+    g_assert_cmpuint (g_list_length (selected_first), ==, 3);
+    g_assert_cmpuint (g_list_length (selected_second), ==, 0);
+    nautilus_files_view_set_action_context (first, FALSE);
+    nautilus_files_view_set_action_context (second, TRUE);
+    gtk_box_remove (GTK_BOX (box), GTK_WIDGET (first));
+    g_assert_true (gtk_widget_activate_action (window, "view.select-all", NULL));
+    g_clear_list (&selected_second, g_object_unref);
+    selected_second = nautilus_files_view_get_selection (second);
+    g_assert_cmpuint (g_list_length (selected_second), ==, 3);
+    nautilus_files_view_set_action_context (second, FALSE);
+    gtk_window_destroy (GTK_WINDOW (window));
+    test_clear_tmp_dir ();
+}
+
 int
 main (int   argc,
       char *argv[])
@@ -887,6 +937,8 @@ main (int   argc,
 
     g_autoptr (NautilusApplication) app = nautilus_application_new ();
 
+    g_test_add_func ("/view/miller/action-context", test_miller_action_context);
+    g_test_add_func ("/view/miller/column", test_miller_column);
     g_test_add_func ("/view/load_dir",
                      test_load_dir);
     g_test_add_func ("/view/add_files",
