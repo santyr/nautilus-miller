@@ -5,7 +5,7 @@ Source baseline: `8618e792713ae6b248c4ca7d740ae78ce9d3040b`. Scope: [full goal](
 | Capability | Existing action/API entry to audit | Context / availability / destination | Required acceptance | Current Columns evidence |
 |---|---|---|---|---|
 | Open / Open With | `open-with-default-application / open-with-other-application` | Selected files; folder disclosure is intercepted only for unmodified single-directory activation | C01,C16 | Source reuse; full end-to-end acceptance open. |
-| New folder / templates | `new-folder / generated template actions` | Active writable backing directory, including empty ancestor columns | C02,C03 | Source reuse; full end-to-end acceptance open. |
+| New folder / templates | `new-folder / generated template actions` | Active writable backing directory, including empty ancestor columns | C02,C03 | Parent and empty-child native New Folder dialogs, delayed focus change and untouched sentinel verified in C integration; genuine input parity open. |
 | Rename / multi-rename | `rename` | Captured selected files, native rename UI/provider | C04,C10 | Source reuse; full end-to-end acceptance open. |
 | Copy / Cut / Paste | `copy / cut / paste` | Source selection snapshot; paste active backing directory, clipboard capabilities | C02,C03,C05 | Source reuse; full end-to-end acceptance open. |
 | Duplicate | No direct action; same-directory copy/paste through existing operations | Selected files in their original directory | C05 | Source reuse; full end-to-end acceptance open. |
