@@ -13,6 +13,7 @@
 #include "nautilus-window.h"
 #include "nautilus-query.h"
 #include "nautilus-view-model.h"
+#include "nautilus-view-controls.h"
 
 static void
 collect_views (GtkWidget *widget, GPtrArray *views)
@@ -328,6 +329,56 @@ test_slot_navigation_and_switching (void)
 }
 
 static void
+test_view_selector_destinations (void)
+{
+    g_settings_set_enum (nautilus_preferences, NAUTILUS_PREFERENCES_DEFAULT_FOLDER_VIEWER, 1);
+    g_autoptr (NautilusWindowSlot) slot = nautilus_window_slot_new (NAUTILUS_MODE_BROWSE);
+    GtkWidget *window = gtk_window_new ();
+    gtk_window_set_child (GTK_WINDOW (window), GTK_WIDGET (slot));
+    g_autoptr (GFile) root = g_file_new_for_path (test_get_tmp_dir ());
+    nautilus_window_slot_open_location_full (slot, root, NULL);
+    settle_slot (slot);
+    const guint modes[] = { 2, 4, 1 };
+    const char *labels[] = { "Grid View", "Columns View", "List View" };
+    const char *icons[] = { "view-grid-symbolic", "view-dual-symbolic", "view-list-symbolic" };
+    g_autoptr (GtkWidget) controls = g_object_ref_sink (g_object_new (NAUTILUS_TYPE_VIEW_CONTROLS,
+        "window-slot", slot, NULL));
+    GtkWidget *button = adw_bin_get_child (ADW_BIN (controls));
+    for (guint i = 0; i < G_N_ELEMENTS (modes); i++)
+    {
+        g_assert_cmpstr (nautilus_window_slot_get_tooltip (slot), ==, labels[i]);
+        g_assert_cmpstr (nautilus_window_slot_get_icon_name (slot), ==, icons[i]);
+        if (g_strcmp0 (g_getenv ("GTK_A11Y"), "test") == 0)
+        {
+            gtk_test_accessible_assert_property (button, GTK_ACCESSIBLE_PROPERTY_LABEL, labels[i]);
+        }
+        g_assert_true (gtk_widget_activate_action (GTK_WIDGET (slot), "slot.files-view-mode-toggle", NULL));
+        settle_slot (slot);
+        g_assert_cmpuint (nautilus_files_view_get_view_id (nautilus_window_slot_get_current_view (slot)), ==, modes[i]);
+    }
+    g_assert_true (gtk_widget_activate_action (GTK_WIDGET (slot), "slot.files-view-mode", "u", 4));
+    g_autoptr (NautilusQuery) query = nautilus_query_new ();
+    nautilus_query_set_text (query, "no-match");
+    nautilus_query_set_location (query, root);
+    nautilus_window_slot_search (slot, query);
+    settle_slot (slot);
+    g_assert_true (gtk_widget_activate_action (GTK_WIDGET (slot), "slot.files-view-mode", "u", 2));
+    settle_slot (slot);
+    g_assert_cmpstr (nautilus_window_slot_get_tooltip (slot), ==, "List View");
+    g_assert_cmpstr (nautilus_window_slot_get_icon_name (slot), ==, "view-list-symbolic");
+    g_assert_true (gtk_widget_activate_action (GTK_WIDGET (slot), "slot.files-view-mode-toggle", NULL));
+    settle_slot (slot);
+    g_assert_cmpuint (nautilus_files_view_get_view_id (nautilus_window_slot_get_current_view (slot)), ==, 1);
+    g_assert_true (gtk_widget_activate_action (GTK_WIDGET (slot), "slot.files-view-mode", "u", 4));
+    settle_slot (slot);
+    g_assert_cmpuint (g_settings_get_enum (nautilus_preferences, NAUTILUS_PREFERENCES_DEFAULT_FOLDER_VIEWER), ==, 4);
+    g_assert_cmpuint (nautilus_files_view_get_view_id (nautilus_window_slot_get_current_view (slot)), ==, 1);
+    g_clear_object (&controls);
+    gtk_window_destroy (GTK_WINDOW (window));
+    test_clear_tmp_dir ();
+}
+
+static void
 after_paint (GdkFrameClock *clock, gboolean *painted)
 {
     *painted = TRUE;
@@ -550,6 +601,7 @@ main (int argc, char **argv)
     nautilus_ensure_extension_points ();
     g_test_add_func ("/miller/window/operations-tabs-search", test_full_window_operations);
     g_test_add_func ("/miller/slot/navigation-and-switching", test_slot_navigation_and_switching);
+    g_test_add_func ("/miller/slot/view-selector-destinations", test_view_selector_destinations);
     g_test_add_func ("/miller/view/error-is-local", test_error_is_local);
     g_test_add_func ("/miller/view/keyboard-and-focus", test_keyboard_and_focus);
     g_test_add_func ("/miller/view/automatic-selection-revealed", test_automatic_selection_revealed);

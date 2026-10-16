@@ -1,5 +1,5 @@
 tests = {
-  'test-miller-view': {'is_parallel': false},
+  'test-miller-view': {'is_parallel': false, 'env': ['GTK_A11Y=test']},
   'test-nautilus-directory-async': {},
   'test-file-operations-create': {},
   'test-files-view': {
@@ -38,6 +38,7 @@ foreach test_name, extra_args : tests
     args: args,
     env: [
       test_env,
+      extra_args.get('env', []),
       'G_TEST_BUILDDIR=@0@'.format(meson.current_build_dir()),
       'G_TEST_SRCDIR=@0@'.format(meson.current_source_dir())
     ],

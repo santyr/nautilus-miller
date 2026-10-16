@@ -303,6 +303,18 @@ nautilus_window_slot_set_view_id (NautilusWindowSlot *self,
     g_object_notify_by_pspec (G_OBJECT (self), properties[PROP_TOOLTIP]);
 }
 
+static gboolean
+supports_miller_columns (NautilusWindowSlot *self, GFile *location)
+{
+    return self->mode == NAUTILUS_MODE_BROWSE && location != NULL &&
+           !g_file_has_uri_scheme (location, SCHEME_SEARCH) &&
+           !g_file_has_uri_scheme (location, SCHEME_RECENT) &&
+           !g_file_has_uri_scheme (location, SCHEME_STARRED) &&
+           !g_file_has_uri_scheme (location, SCHEME_TRASH) &&
+           !nautilus_is_root_for_scheme (location, SCHEME_NETWORK_VIEW) &&
+           (self->content_view == NULL || nautilus_files_view_get_search_query (self->content_view) == NULL);
+}
+
 static guint
 nautilus_window_slot_get_view_id_for_location (NautilusWindowSlot *self,
                                                GFile              *location)
@@ -329,13 +341,7 @@ nautilus_window_slot_get_view_id_for_location (NautilusWindowSlot *self,
         return NAUTILUS_VIEW_NETWORK_ID;
     }
 
-    if (self->default_view_id == NAUTILUS_VIEW_MILLER_ID &&
-        (self->mode != NAUTILUS_MODE_BROWSE ||
-         g_file_has_uri_scheme (location, SCHEME_SEARCH) ||
-         g_file_has_uri_scheme (location, SCHEME_RECENT) ||
-         g_file_has_uri_scheme (location, SCHEME_STARRED) ||
-         g_file_has_uri_scheme (location, SCHEME_TRASH) ||
-         (self->content_view != NULL && nautilus_files_view_get_search_query (self->content_view) != NULL)))
+    if (self->default_view_id == NAUTILUS_VIEW_MILLER_ID && !supports_miller_columns (self, location))
     {
         return NAUTILUS_VIEW_LIST_ID;
     }
@@ -1199,7 +1205,8 @@ action_files_view_mode_toggle (GSimpleAction *action,
     {
         change_files_view_mode (self, NAUTILUS_VIEW_GRID_ID);
     }
-    else if (current_view_id == NAUTILUS_VIEW_GRID_ID)
+    else if (current_view_id == NAUTILUS_VIEW_GRID_ID &&
+             supports_miller_columns (self, nautilus_window_slot_get_current_location (self)))
     {
         change_files_view_mode (self, NAUTILUS_VIEW_MILLER_ID);
     }
@@ -3294,6 +3301,11 @@ nautilus_window_slot_get_icon_name (NautilusWindowSlot *self)
         return "";
     }
 
+    if (nautilus_files_view_get_view_id (self->content_view) == NAUTILUS_VIEW_GRID_ID &&
+        !supports_miller_columns (self, nautilus_window_slot_get_current_location (self)))
+    {
+        return "view-list-symbolic";
+    }
     return nautilus_files_view_get_toggle_icon_name (self->content_view);
 }
 
@@ -3307,6 +3319,11 @@ nautilus_window_slot_get_tooltip (NautilusWindowSlot *self)
         return NULL;
     }
 
+    if (nautilus_files_view_get_view_id (self->content_view) == NAUTILUS_VIEW_GRID_ID &&
+        !supports_miller_columns (self, nautilus_window_slot_get_current_location (self)))
+    {
+        return _("List View");
+    }
     return nautilus_files_view_get_toggle_tooltip (self->content_view);
 }
 

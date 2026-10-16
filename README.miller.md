@@ -4,6 +4,8 @@ A fork of GNOME Nautilus 50.4 with Finder-style Miller columns alongside Grid an
 
 Select **Columns View** from View Options, or press **Ctrl+3**. Selecting a folder reveals its contents in the next column while keeping focus in the parent. Right enters the selected folder; Left returns to the previous column. Ancestor selections stay highlighted, each column scrolls vertically, and separators can be dragged to resize columns. Normal Nautilus file activation and operation shortcuts apply.
 
+The toolbar cycles **List → Grid → Columns → List** in ordinary folders. Its icon, tooltip, and accessible name describe the next view. In special locations that do not support Columns, the toggle cycles List and Grid; selecting Columns explicitly still saves it for ordinary browsing. **Ctrl+1** selects List, **Ctrl+2** Grid, and **Ctrl+3** Columns.
+
 Search, Recent, Starred, Trash, and the Network overview use their existing views. Columns returns when you resume ordinary folder browsing. This version has no file preview pane.
 
 ## Build and run on Fedora 44
