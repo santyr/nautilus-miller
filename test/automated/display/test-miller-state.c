@@ -10,6 +10,10 @@
 #include "nautilus-resources.h"
 #include "nautilus-tag-manager.h"
 #include "nautilus-window-slot.h"
+#include "nautilus-window.h"
+#include "nautilus-bookmark.h"
+#include "nautilus-query.h"
+#include "miller-test-input.h"
 
 typedef struct
 {
@@ -19,6 +23,7 @@ typedef struct
     GFile *root, *child, *other, *one, *two;
     guint requests;
 } Fixture;
+static MillerTestInput *input;
 
 static void
 pump (guint milliseconds)
@@ -57,6 +62,18 @@ find_view (GtkWidget *widget, GFile *location)
     }
     return NULL;
 }
+static GtkWidget *
+find_widget_type (GtkWidget *widget, GType type)
+{
+    if (G_TYPE_CHECK_INSTANCE_TYPE (widget, type)) { return widget; }
+    for (GtkWidget *child = gtk_widget_get_first_child (widget); child != NULL;
+         child = gtk_widget_get_next_sibling (child))
+    {
+        GtkWidget *found = find_widget_type (child, type);
+        if (found != NULL) { return found; }
+    }
+    return NULL;
+}
 static GtkAdjustment *
 vertical (NautilusFilesView *view)
 {
@@ -84,7 +101,20 @@ assert_selection (NautilusFilesView *view, GFile *location)
 }
 static void requested (NautilusMillerView *strip, GFile *location, Fixture *f) { f->requests++; }
 static void
-setup (Fixture *f, gconstpointer unused)
+settle_native (Fixture *f)
+{
+    gint64 deadline = g_get_monotonic_time () + 15 * G_TIME_SPAN_SECOND;
+    while (nautilus_window_slot_get_loading (f->slot) || g_main_context_pending (NULL))
+    {
+        g_assert_cmpint (g_get_monotonic_time (), <, deadline);
+        g_main_context_iteration (NULL, FALSE); g_usleep (1000);
+    }
+    NautilusFilesView *view = nautilus_window_slot_get_current_view (f->slot);
+    g_set_object (&f->strip, NAUTILUS_MILLER_VIEW (gtk_widget_get_ancestor (GTK_WIDGET (view), NAUTILUS_TYPE_MILLER_VIEW)));
+    pump (150);
+}
+static void
+setup (Fixture *f, gconstpointer native)
 {
     f->root = g_file_new_for_path (test_get_tmp_dir ());
     f->child = g_file_get_child (f->root, "child");
@@ -99,19 +129,30 @@ setup (Fixture *f, gconstpointer unused)
         g_autoptr (GFile) file = g_file_get_child (f->child, name);
         g_assert_true (g_file_replace_contents (file, "fixture", 7, NULL, FALSE, 0, NULL, NULL, NULL));
     }
-    f->slot = nautilus_window_slot_new (NAUTILUS_MODE_BROWSE);
-    f->strip = g_object_ref_sink (nautilus_miller_view_new (f->slot));
-    f->window = gtk_window_new ();
-    GtkWidget *box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
-    f->entry = gtk_entry_new ();
-    gtk_box_append (GTK_BOX (box), f->entry);
-    gtk_box_append (GTK_BOX (box), GTK_WIDGET (f->strip));
-    gtk_window_set_child (GTK_WINDOW (f->window), box);
+    if (native != NULL)
+    {
+        g_settings_set_enum (nautilus_preferences, NAUTILUS_PREFERENCES_DEFAULT_FOLDER_VIEWER, 4);
+        f->window = GTK_WIDGET (nautilus_window_new ());
+        nautilus_window_open_location_full (NAUTILUS_WINDOW (f->window), f->child, 0, NULL);
+        g_object_get (f->window, "active-slot", &f->slot, NULL);
+    }
+    else
+    {
+        f->slot = nautilus_window_slot_new (NAUTILUS_MODE_BROWSE);
+        f->strip = g_object_ref_sink (nautilus_miller_view_new (f->slot));
+        f->window = gtk_window_new ();
+        GtkWidget *box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
+        f->entry = gtk_entry_new ();
+        gtk_box_append (GTK_BOX (box), f->entry);
+        gtk_box_append (GTK_BOX (box), GTK_WIDGET (f->strip));
+        gtk_window_set_child (GTK_WINDOW (f->window), box);
+        nautilus_miller_view_set_location (f->strip, f->child, NULL);
+        nautilus_miller_view_set_active (f->strip, TRUE);
+    }
     gtk_window_set_default_size (GTK_WINDOW (f->window), 900, 400);
-    nautilus_miller_view_set_location (f->strip, f->child, NULL);
-    nautilus_miller_view_set_active (f->strip, TRUE);
     gtk_window_present (GTK_WINDOW (f->window));
-    settle (f);
+    if (native != NULL) { settle_native (f); }
+    else { settle (f); }
     g_signal_connect (f->strip, "location-requested", G_CALLBACK (requested), f);
 }
 static void
@@ -162,6 +203,18 @@ test_parent_context_and_entry (Fixture *f, gconstpointer unused)
     g_assert_true (g_file_equal (nautilus_miller_view_get_location (f->strip), f->child));
     g_assert_true (g_file_equal (nautilus_files_view_get_location (parent), f->root));
     assert_selection (parent, f->child);
+    GtkWidget *focus = gtk_root_get_focus (GTK_ROOT (f->window));
+    g_assert_true (focus == f->entry || gtk_widget_is_ancestor (focus, f->entry));
+}
+static void
+test_new_entry_focus_during_restore (Fixture *f, gconstpointer unused)
+{
+    NautilusFilesView *view = nautilus_miller_view_get_active_view (f->strip);
+    gtk_widget_grab_focus (GTK_WIDGET (view)); settle (f);
+    g_autoptr (GVariant) state = nautilus_miller_view_capture_state (f->strip, FALSE);
+    nautilus_miller_view_restore_state (f->strip, state, TRUE);
+    gtk_widget_grab_focus (f->entry);
+    settle (f);
     GtkWidget *focus = gtk_root_get_focus (GTK_ROOT (f->window));
     g_assert_true (focus == f->entry || gtk_widget_is_ancestor (focus, f->entry));
 }
@@ -283,11 +336,334 @@ test_reentrant_navigation (Fixture *f, gconstpointer unused)
     parent = find_view (GTK_WIDGET (f->strip), f->root);
     assert_selection (parent, f->other);
 }
+static void
+test_native_history_positions (Fixture *f, gconstpointer unused)
+{
+    NautilusFilesView *view = nautilus_window_slot_get_current_view (f->slot);
+    gtk_widget_grab_focus (GTK_WIDGET (view));
+    select_file (view, f->one); settle_native (f);
+    gtk_adjustment_set_value (vertical (view), 280);
+    gtk_adjustment_set_value (horizontal (f), 200); pump (100);
+    double v = gtk_adjustment_get_value (vertical (view)), h = gtk_adjustment_get_value (horizontal (f));
+    nautilus_window_open_location_full (NAUTILUS_WINDOW (f->window), f->other, 0, NULL); settle_native (f);
+    g_assert_true (gtk_widget_activate_action (GTK_WIDGET (f->slot), "slot.back", NULL)); settle_native (f);
+    view = nautilus_window_slot_get_current_view (f->slot);
+    g_assert_true (g_file_equal (nautilus_files_view_get_location (view), f->child));
+    assert_selection (view, f->one);
+    g_assert_cmpfloat_with_epsilon (gtk_adjustment_get_value (vertical (view)), v, 2);
+    g_assert_cmpfloat_with_epsilon (gtk_adjustment_get_value (horizontal (f)), h, 2);
+    g_assert_true (gtk_widget_activate_action (GTK_WIDGET (f->slot), "slot.forward", NULL)); settle_native (f);
+    g_assert_true (g_file_equal (nautilus_window_slot_get_location (f->slot), f->other));
+}
+static void
+test_native_history_parent (Fixture *f, gconstpointer unused)
+{
+    NautilusFilesView *parent = find_view (GTK_WIDGET (f->strip), f->root);
+    gtk_widget_grab_focus (GTK_WIDGET (parent)); settle_native (f);
+    g_assert_true (nautilus_window_slot_get_current_view (f->slot) == parent);
+    guint history = g_list_length (nautilus_window_slot_get_back_history (f->slot));
+    g_settings_set_uint (nautilus_preferences, "miller-default-column-width", 300);
+    gtk_widget_grab_focus (GTK_WIDGET (nautilus_miller_view_get_active_view (f->strip))); settle_native (f);
+    g_assert_cmpuint (g_list_length (nautilus_window_slot_get_back_history (f->slot)), ==, history);
+    nautilus_window_open_location_full (NAUTILUS_WINDOW (f->window), f->other, 0, NULL); settle_native (f);
+    g_assert_true (gtk_widget_activate_action (GTK_WIDGET (f->slot), "slot.back", NULL)); settle_native (f);
+    parent = nautilus_window_slot_get_current_view (f->slot);
+    g_assert_true (g_file_equal (nautilus_window_slot_get_location (f->slot), f->child));
+    g_assert_true (g_file_equal (nautilus_files_view_get_location (parent), f->root));
+    assert_selection (parent, f->child);
+    g_assert_cmpuint (g_list_length (nautilus_window_slot_get_back_history (f->slot)), ==, history);
+    g_settings_reset (nautilus_preferences, "miller-default-column-width");
+}
+static void
+test_native_closed_tab (Fixture *f, gconstpointer unused)
+{
+    NautilusFilesView *parent = find_view (GTK_WIDGET (f->strip), f->root);
+    gtk_widget_grab_focus (GTK_WIDGET (parent)); settle_native (f);
+    nautilus_window_new_tab (NAUTILUS_WINDOW (f->window)); pump (150);
+    g_object_set (f->window, "active-slot", f->slot, NULL); pump (50);
+    g_assert_true (g_file_equal (nautilus_files_view_get_location (
+        nautilus_window_slot_get_current_view (f->slot)), f->root));
+    g_assert_true (gtk_widget_activate_action (f->window, "win.close-current-view", NULL)); pump (100);
+    g_assert_true (gtk_widget_activate_action (f->window, "win.restore-tab", NULL)); pump (100);
+    AdwTabView *tabs = ADW_TAB_VIEW (find_widget_type (f->window, ADW_TYPE_TAB_VIEW));
+    g_assert_cmpint (adw_tab_view_get_n_pages (tabs), ==, 2);
+    adw_tab_view_set_selected_page (tabs, adw_tab_view_get_nth_page (tabs, 1));
+    g_clear_object (&f->slot);
+    g_object_get (f->window, "active-slot", &f->slot, NULL); settle_native (f);
+    parent = nautilus_window_slot_get_current_view (f->slot);
+    g_assert_true (g_file_equal (nautilus_window_slot_get_location (f->slot), f->child));
+    g_assert_true (g_file_equal (nautilus_files_view_get_location (parent), f->root));
+    assert_selection (parent, f->child);
+}
+
+static void
+test_native_mode_context (Fixture *f, gconstpointer unused)
+{
+    NautilusFilesView *parent = find_view (GTK_WIDGET (f->strip), f->root);
+    gtk_widget_grab_focus (GTK_WIDGET (parent)); settle_native (f);
+    guint history = g_list_length (nautilus_window_slot_get_back_history (f->slot));
+    g_assert_true (gtk_widget_activate_action (GTK_WIDGET (f->slot), "slot.files-view-mode", "u", 2));
+    settle_native (f);
+    NautilusFilesView *view = nautilus_window_slot_get_current_view (f->slot);
+    g_assert_true (g_file_equal (nautilus_files_view_get_location (view), f->child));
+    g_autolist (NautilusFile) selection = nautilus_files_view_get_selection (view);
+    g_assert_null (selection);
+    g_assert_true (gtk_widget_activate_action (GTK_WIDGET (f->slot), "slot.files-view-mode", "u", 4));
+    settle_native (f);
+    parent = nautilus_window_slot_get_current_view (f->slot);
+    g_assert_true (g_file_equal (nautilus_files_view_get_location (parent), f->root));
+    assert_selection (parent, f->child);
+    g_assert_cmpuint (g_list_length (nautilus_window_slot_get_back_history (f->slot)), ==, history);
+}
+
+static void
+test_native_history_in_flat_mode (Fixture *f, gconstpointer unused)
+{
+    NautilusFilesView *parent = find_view (GTK_WIDGET (f->strip), f->root);
+    gtk_widget_grab_focus (GTK_WIDGET (parent)); settle_native (f);
+    nautilus_window_open_location_full (NAUTILUS_WINDOW (f->window), f->other, 0, NULL); settle_native (f);
+    g_assert_true (gtk_widget_activate_action (GTK_WIDGET (f->slot), "slot.files-view-mode", "u", 2));
+    settle_native (f);
+    g_assert_true (gtk_widget_activate_action (GTK_WIDGET (f->slot), "slot.back", NULL)); settle_native (f);
+    g_assert_null (f->strip);
+    g_assert_true (g_file_equal (nautilus_window_slot_get_location (f->slot), f->child));
+    g_assert_true (gtk_widget_activate_action (GTK_WIDGET (f->slot), "slot.files-view-mode", "u", 4));
+    settle_native (f);
+    parent = nautilus_window_slot_get_current_view (f->slot);
+    g_assert_true (g_file_equal (nautilus_files_view_get_location (parent), f->root));
+    assert_selection (parent, f->child);
+}
+
+static void
+test_native_flat_selection_history (Fixture *f, gconstpointer unused)
+{
+    NautilusFilesView *parent = find_view (GTK_WIDGET (f->strip), f->root);
+    gtk_widget_grab_focus (GTK_WIDGET (parent)); settle_native (f);
+    g_assert_true (gtk_widget_activate_action (GTK_WIDGET (f->slot), "slot.files-view-mode", "u", 2));
+    settle_native (f);
+    select_file (nautilus_window_slot_get_current_view (f->slot), f->two); settle_native (f);
+    nautilus_window_open_location_full (NAUTILUS_WINDOW (f->window), f->other, 0, NULL); settle_native (f);
+    g_assert_true (gtk_widget_activate_action (GTK_WIDGET (f->slot), "slot.back", NULL)); settle_native (f);
+    g_assert_true (gtk_widget_activate_action (GTK_WIDGET (f->slot), "slot.files-view-mode", "u", 4));
+    settle_native (f);
+    NautilusFilesView *view = nautilus_window_slot_get_current_view (f->slot);
+    g_assert_true (g_file_equal (nautilus_files_view_get_location (view), f->child));
+    assert_selection (view, f->two);
+}
+
+static void
+test_native_immediate_mode_selection (Fixture *f, gconstpointer unused)
+{
+    NautilusFilesView *parent = find_view (GTK_WIDGET (f->strip), f->root);
+    gtk_widget_grab_focus (GTK_WIDGET (parent)); settle_native (f);
+    g_assert_true (gtk_widget_activate_action (GTK_WIDGET (f->slot), "slot.files-view-mode", "u", 2));
+    settle_native (f);
+    select_file (nautilus_window_slot_get_current_view (f->slot), f->two);
+    /* The native FilesView selection notification is coalesced in an idle. */
+    g_assert_true (gtk_widget_activate_action (GTK_WIDGET (f->slot), "slot.files-view-mode", "u", 4));
+    settle_native (f);
+    NautilusFilesView *view = nautilus_window_slot_get_current_view (f->slot);
+    g_assert_true (g_file_equal (nautilus_files_view_get_location (view), f->child));
+    assert_selection (view, f->two);
+}
+
+static void
+test_native_mode_new_selection (Fixture *f, gconstpointer unused)
+{
+    NautilusFilesView *parent = find_view (GTK_WIDGET (f->strip), f->root);
+    gtk_widget_grab_focus (GTK_WIDGET (parent)); settle_native (f);
+    g_assert_true (gtk_widget_activate_action (GTK_WIDGET (f->slot), "slot.files-view-mode", "u", 2));
+    settle_native (f);
+    select_file (nautilus_window_slot_get_current_view (f->slot), f->two); settle_native (f);
+    g_assert_true (gtk_widget_activate_action (GTK_WIDGET (f->slot), "slot.files-view-mode", "u", 4));
+    settle_native (f);
+    NautilusFilesView *view = nautilus_window_slot_get_current_view (f->slot);
+    g_assert_true (g_file_equal (nautilus_files_view_get_location (view), f->child));
+    assert_selection (view, f->two);
+    g_assert_true (gtk_widget_activate_action (GTK_WIDGET (f->slot), "slot.files-view-mode", "u", 1));
+    settle_native (f);
+    nautilus_files_view_set_selection (nautilus_window_slot_get_current_view (f->slot), NULL, FALSE);
+    settle_native (f);
+    g_assert_true (gtk_widget_activate_action (GTK_WIDGET (f->slot), "slot.files-view-mode", "u", 4));
+    settle_native (f);
+    view = nautilus_window_slot_get_current_view (f->slot);
+    g_assert_true (g_file_equal (nautilus_files_view_get_location (view), f->child));
+    g_autolist (NautilusFile) selection = nautilus_files_view_get_selection (view);
+    g_assert_null (selection);
+}
+
+static void
+test_native_disclosure_history (Fixture *f, gconstpointer unused)
+{
+    NautilusFilesView *parent = find_view (GTK_WIDGET (f->strip), f->root);
+    gtk_widget_grab_focus (GTK_WIDGET (parent)); settle_native (f);
+    guint history = g_list_length (nautilus_window_slot_get_back_history (f->slot));
+    select_file (parent, f->other); settle_native (f);
+    g_assert_true (g_file_equal (nautilus_window_slot_get_location (f->slot), f->other));
+    g_assert_cmpuint (g_list_length (nautilus_window_slot_get_back_history (f->slot)), ==, history + 1);
+    g_assert_true (gtk_widget_activate_action (GTK_WIDGET (f->slot), "slot.back", NULL)); settle_native (f);
+    g_assert_true (g_file_equal (nautilus_window_slot_get_location (f->slot), f->child));
+    parent = nautilus_window_slot_get_current_view (f->slot);
+    g_assert_true (g_file_equal (nautilus_files_view_get_location (parent), f->root));
+    assert_selection (parent, f->child);
+    g_assert_cmpuint (g_list_length (nautilus_window_slot_get_back_history (f->slot)), ==, history);
+}
+
+static void
+test_native_search_cancel (Fixture *f, gconstpointer unused)
+{
+    NautilusFilesView *parent = find_view (GTK_WIDGET (f->strip), f->root);
+    gtk_widget_grab_focus (GTK_WIDGET (parent)); settle_native (f);
+    guint history = g_list_length (nautilus_window_slot_get_back_history (f->slot));
+    g_autoptr (NautilusQuery) query = nautilus_query_new ();
+    nautilus_query_set_text (query, "row");
+    nautilus_query_set_location (query, f->child);
+    nautilus_window_slot_search (f->slot, query); settle_native (f);
+    g_assert_null (f->strip);
+    g_assert_true (gtk_widget_activate_action (GTK_WIDGET (f->slot), "slot.search-visible", NULL));
+    settle_native (f);
+    g_assert_true (g_file_equal (nautilus_window_slot_get_location (f->slot), f->child));
+    parent = nautilus_window_slot_get_current_view (f->slot);
+    g_assert_true (g_file_equal (nautilus_files_view_get_location (parent), f->root));
+    assert_selection (parent, f->child);
+    g_assert_cmpuint (g_list_length (nautilus_window_slot_get_back_history (f->slot)), ==, history);
+}
+
+static void
+test_native_search_selected_result (Fixture *f, gconstpointer unused)
+{
+    NautilusFilesView *parent = find_view (GTK_WIDGET (f->strip), f->root);
+    gtk_widget_grab_focus (GTK_WIDGET (parent)); settle_native (f);
+    g_autoptr (NautilusQuery) query = nautilus_query_new ();
+    nautilus_query_set_text (query, "row");
+    nautilus_query_set_location (query, f->child);
+    nautilus_window_slot_search (f->slot, query); settle_native (f);
+    NautilusFilesView *view = nautilus_window_slot_get_current_view (f->slot);
+    select_file (view, f->two); settle_native (f);
+    assert_selection (view, f->two);
+    g_assert_true (gtk_widget_activate_action (GTK_WIDGET (f->slot), "slot.search-visible", NULL));
+    settle_native (f);
+    view = nautilus_window_slot_get_current_view (f->slot);
+    g_assert_true (g_file_equal (nautilus_files_view_get_location (view), f->child));
+    assert_selection (view, f->two);
+}
+
+static void
+test_native_explicit_selection_and_removed (Fixture *f, gconstpointer unused)
+{
+    NautilusFilesView *view = nautilus_window_slot_get_current_view (f->slot);
+    select_file (view, f->one); settle_native (f);
+    nautilus_window_open_location_full (NAUTILUS_WINDOW (f->window), f->other, 0, NULL); settle_native (f);
+    g_assert_true (g_file_delete (f->one, NULL, NULL));
+    g_assert_true (gtk_widget_activate_action (GTK_WIDGET (f->slot), "slot.back", NULL)); settle_native (f);
+    view = nautilus_window_slot_get_current_view (f->slot);
+    g_assert_true (g_file_equal (nautilus_files_view_get_location (view), f->child));
+    g_autolist (NautilusFile) selection = nautilus_files_view_get_selection (view);
+    g_assert_null (selection);
+    NautilusFilesView *parent = find_view (GTK_WIDGET (f->strip), f->root);
+    gtk_widget_grab_focus (GTK_WIDGET (parent)); settle_native (f);
+    nautilus_window_open_location_full (NAUTILUS_WINDOW (f->window), f->other, 0, NULL); settle_native (f);
+    g_autoptr (NautilusFile) two = nautilus_file_get (f->two);
+    GList explicit = { .data = two };
+    nautilus_window_slot_open_location_full (f->slot, f->child, &explicit); settle_native (f);
+    view = nautilus_window_slot_get_current_view (f->slot);
+    g_assert_true (g_file_equal (nautilus_files_view_get_location (view), f->child));
+    assert_selection (view, f->two);
+}
+
+static void
+test_native_renamed_history_endpoint (Fixture *f, gconstpointer unused)
+{
+    nautilus_window_open_location_full (NAUTILUS_WINDOW (f->window), f->other, 0, NULL); settle_native (f);
+    NautilusBookmark *bookmark = nautilus_window_slot_get_back_history (f->slot)->data;
+    g_assert_true (g_file_equal (nautilus_bookmark_get_location (bookmark), f->child));
+    g_autoptr (GFile) renamed = g_file_get_child (f->root, "renamed");
+    g_assert_true (g_file_move (f->child, renamed, 0, NULL, NULL, NULL, NULL));
+    gint64 deadline = g_get_monotonic_time () + 10 * G_TIME_SPAN_SECOND;
+    while (!g_file_equal (nautilus_bookmark_get_location (bookmark), renamed))
+    {
+        g_assert_cmpint (g_get_monotonic_time (), <, deadline);
+        pump (10);
+    }
+    g_assert_true (gtk_widget_activate_action (GTK_WIDGET (f->slot), "slot.back", NULL));
+    deadline = g_get_monotonic_time () + 5 * G_TIME_SPAN_SECOND;
+    while (!g_file_equal (nautilus_window_slot_get_location (f->slot), renamed))
+    {
+        g_assert_cmpint (g_get_monotonic_time (), <, deadline);
+        pump (10);
+    }
+    g_assert_true (g_file_equal (nautilus_miller_view_get_location (f->strip), renamed));
+    settle_native (f);
+    g_assert_true (g_file_equal (nautilus_files_view_get_location (
+        nautilus_window_slot_get_current_view (f->slot)), renamed));
+}
+
+static void
+test_native_copied_history (Fixture *f, gconstpointer unused)
+{
+    nautilus_window_open_location_full (NAUTILUS_WINDOW (f->window), f->other, 0, NULL); settle_native (f);
+    gtk_widget_grab_focus (GTK_WIDGET (find_view (GTK_WIDGET (f->strip), f->root))); settle_native (f);
+    nautilus_window_back_or_forward_in_new_tab (NAUTILUS_WINDOW (f->window), NAUTILUS_NAVIGATION_DIRECTION_BACK);
+    pump (150);
+    AdwTabView *tabs = ADW_TAB_VIEW (find_widget_type (f->window, ADW_TYPE_TAB_VIEW));
+    g_assert_cmpint (adw_tab_view_get_n_pages (tabs), ==, 2);
+    NautilusWindowSlot *copy = NAUTILUS_WINDOW_SLOT (adw_tab_page_get_child (adw_tab_view_get_nth_page (tabs, 1)));
+    g_assert_true (copy != f->slot);
+    /* Change the original tab's Other state after the history copy. */
+    gtk_widget_grab_focus (GTK_WIDGET (find_view (GTK_WIDGET (f->strip), f->other))); settle_native (f);
+    nautilus_window_open_location_full (NAUTILUS_WINDOW (f->window), f->child, 0, NULL); settle_native (f);
+    adw_tab_view_set_selected_page (tabs, adw_tab_view_get_nth_page (tabs, 1));
+    g_set_object (&f->slot, copy); settle_native (f);
+    g_assert_true (gtk_widget_activate_action (GTK_WIDGET (f->slot), "slot.forward", NULL)); settle_native (f);
+    g_assert_true (g_file_equal (nautilus_window_slot_get_location (f->slot), f->other));
+    NautilusFilesView *parent = nautilus_window_slot_get_current_view (f->slot);
+    g_assert_true (g_file_equal (nautilus_files_view_get_location (parent), f->root));
+    assert_selection (parent, f->other);
+}
+
+static void
+key (guint value, gboolean pressed)
+{
+    g_autoptr (GError) error = NULL;
+    g_assert_true (miller_test_input_key (input, value, pressed, &error));
+    g_assert_no_error (error);
+    pump (30);
+}
+
+static void
+test_native_history_keys_entry (Fixture *f, gconstpointer unused)
+{
+    if (input == NULL) { g_test_skip ("Requires guarded private compositor input"); return; }
+    NautilusFilesView *parent = find_view (GTK_WIDGET (f->strip), f->root);
+    gtk_widget_grab_focus (GTK_WIDGET (parent)); settle_native (f);
+    nautilus_window_open_location_full (NAUTILUS_WINDOW (f->window), f->other, 0, NULL); settle_native (f);
+    key (GDK_KEY_Alt_L, TRUE); key (GDK_KEY_Left, TRUE); key (GDK_KEY_Left, FALSE); key (GDK_KEY_Alt_L, FALSE);
+    settle_native (f);
+    g_assert_true (g_file_equal (nautilus_window_slot_get_location (f->slot), f->child));
+    parent = nautilus_window_slot_get_current_view (f->slot);
+    g_assert_true (g_file_equal (nautilus_files_view_get_location (parent), f->root));
+    key (GDK_KEY_Alt_L, TRUE); key (GDK_KEY_Right, TRUE); key (GDK_KEY_Right, FALSE); key (GDK_KEY_Alt_L, FALSE);
+    settle_native (f);
+    g_assert_true (g_file_equal (nautilus_window_slot_get_location (f->slot), f->other));
+    key (GDK_KEY_Control_L, TRUE); key (GDK_KEY_l, TRUE); key (GDK_KEY_l, FALSE); key (GDK_KEY_Control_L, FALSE);
+    GtkWidget *entry = gtk_root_get_focus (GTK_ROOT (f->window));
+    g_assert_true (GTK_IS_EDITABLE (entry));
+    g_assert_true (gtk_widget_activate_action (GTK_WIDGET (f->slot), "slot.back", NULL)); settle_native (f);
+    g_assert_true (gtk_root_get_focus (GTK_ROOT (f->window)) == entry);
+    parent = nautilus_window_slot_get_current_view (f->slot);
+    g_assert_true (g_file_equal (nautilus_files_view_get_location (parent), f->root));
+}
 
 int
 main (int argc, char **argv)
 {
     g_test_init (&argc, &argv, NULL);
+    if (g_getenv ("MILLER_TEST_SESSION") != NULL)
+    {
+        g_autoptr (GError) error = NULL;
+        input = miller_test_input_new (&error);
+        g_assert_no_error (error);
+    }
     nautilus_register_resource (); nautilus_global_preferences_init ();
     g_autoptr (NautilusTagManager) tags = nautilus_tag_manager_new_dummy ();
     test_init_config_dir ();
@@ -299,11 +675,30 @@ main (int argc, char **argv)
 #define CASE(name, function) g_test_add ("/miller/state/" name, Fixture, NULL, setup, function, teardown)
     CASE ("roundtrip", test_roundtrip);
     CASE ("parent-entry", test_parent_context_and_entry);
+    CASE ("new-entry-focus", test_new_entry_focus_during_restore);
     CASE ("newer-selection-navigation-dispose", test_newer_selection_and_navigation);
     CASE ("multiple-removed", test_removed_and_multiple_selection);
     CASE ("leaving-parent-branch", test_leaving_parent_branch);
     CASE ("manual-scroll", test_manual_scroll_cancels);
     CASE ("activation-cancels-context", test_activation_cancels_pending_context);
     CASE ("reentrant-navigation", test_reentrant_navigation);
-    return g_test_run ();
+#define NATIVE(name, function) g_test_add ("/miller/history/" name, Fixture, GINT_TO_POINTER (1), setup, function, teardown)
+    NATIVE ("positions", test_native_history_positions);
+    NATIVE ("parent-context", test_native_history_parent);
+    NATIVE ("disclosure-history", test_native_disclosure_history);
+    NATIVE ("closed-tab", test_native_closed_tab);
+    NATIVE ("mode-context", test_native_mode_context);
+    NATIVE ("history-in-flat-mode", test_native_history_in_flat_mode);
+    NATIVE ("flat-selection-history", test_native_flat_selection_history);
+    NATIVE ("immediate-mode-selection", test_native_immediate_mode_selection);
+    NATIVE ("mode-new-selection", test_native_mode_new_selection);
+    NATIVE ("search-cancel", test_native_search_cancel);
+    NATIVE ("search-selection", test_native_search_selected_result);
+    NATIVE ("explicit-removed", test_native_explicit_selection_and_removed);
+    NATIVE ("renamed-endpoint", test_native_renamed_history_endpoint);
+    NATIVE ("copied-history", test_native_copied_history);
+    NATIVE ("keys-entry", test_native_history_keys_entry);
+    int result = g_test_run ();
+    miller_test_input_free (input);
+    return result;
 }

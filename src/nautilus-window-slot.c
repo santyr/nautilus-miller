@@ -145,6 +145,8 @@ struct _NautilusWindowSlot
     NautilusLocationChangeType location_change_type;
     guint location_change_distance;
     NautilusFileList *pending_selection;
+    GVariant *pending_miller_state;
+    gboolean pending_miller_focus;
     NautilusFile *pending_file_to_activate;
     NautilusFile *determine_view_file;
     GCancellable *mount_cancellable;
@@ -194,6 +196,76 @@ static void update_back_forward_actions (NautilusWindowSlot *self);
 static void clear_content_view (NautilusWindowSlot *self);
 static void bind_content_view (NautilusWindowSlot *self, NautilusFilesView *view);
 static void miller_loading_changed (NautilusMillerView *miller, GParamSpec *pspec, NautilusWindowSlot *self);
+static void save_selection_for_history (NautilusWindowSlot *self);
+
+#define MILLER_HISTORY_STATE "nautilus-miller-history-state"
+
+static gboolean
+miller_state_matches_location (GVariant *state, GFile *location)
+{
+    if (state == NULL || location == NULL) { return FALSE; }
+    const char *uri;
+    g_variant_get_child (state, 0, "&s", &uri);
+    g_autoptr (GFile) endpoint = g_file_new_for_uri (uri);
+    return g_file_equal (endpoint, location);
+}
+
+static GVariant *
+bookmark_miller_state (NautilusBookmark *bookmark)
+{
+    GVariant *state = g_object_get_data (G_OBJECT (bookmark), MILLER_HISTORY_STATE);
+    /* Native bookmarks follow monitored renames; the immutable snapshot's
+     * old URI identities must never override the bookmark's new endpoint. */
+    return miller_state_matches_location (state, nautilus_bookmark_get_location (bookmark)) ? state : NULL;
+}
+
+static gboolean
+focus_is_in_file_view (NautilusWindowSlot *self)
+{
+    GtkRoot *root = gtk_widget_get_root (GTK_WIDGET (self));
+    GtkWidget *focus = root != NULL ? gtk_root_get_focus (root) : NULL;
+
+    return self->content_view != NULL && focus != NULL &&
+           (focus == GTK_WIDGET (self->content_view) ||
+            gtk_widget_is_ancestor (focus, GTK_WIDGET (self->content_view))) &&
+           !GTK_IS_EDITABLE (focus) &&
+           gtk_widget_get_ancestor (focus, GTK_TYPE_POPOVER) == NULL;
+}
+
+static void
+save_miller_state (NautilusWindowSlot *self, gboolean leaving_branch)
+{
+    if (self->miller_view == NULL || self->current_location_bookmark == NULL)
+    {
+        return;
+    }
+
+    GFile *endpoint = nautilus_miller_view_get_location (self->miller_view);
+    GFile *bookmarked = nautilus_bookmark_get_location (self->current_location_bookmark);
+    /* A newer strip request can precede the slot's location commit. Never
+     * attach that branch to the previous endpoint's bookmark. */
+    if (endpoint != NULL && g_file_equal (endpoint, bookmarked))
+    {
+        g_object_set_data_full (G_OBJECT (self->current_location_bookmark), MILLER_HISTORY_STATE,
+                               nautilus_miller_view_capture_state (self->miller_view, leaving_branch),
+                               (GDestroyNotify) g_variant_unref);
+    }
+}
+
+static NautilusBookmark *
+copy_navigation_bookmark (NautilusBookmark *bookmark, gpointer unused)
+{
+    NautilusBookmark *copy = nautilus_bookmark_new (nautilus_bookmark_get_location (bookmark), NULL);
+    GVariant *state = bookmark_miller_state (bookmark);
+
+    nautilus_bookmark_take_selected_uris (copy, g_strdupv (nautilus_bookmark_get_selected_uris (bookmark)));
+    if (state != NULL)
+    {
+        g_object_set_data_full (G_OBJECT (copy), MILLER_HISTORY_STATE, g_variant_ref (state),
+                               (GDestroyNotify) g_variant_unref);
+    }
+    return copy;
+}
 
 void
 free_navigation_state (gpointer data)
@@ -212,6 +284,8 @@ void
 nautilus_window_slot_restore_navigation_state (NautilusWindowSlot      *self,
                                                NautilusNavigationState *data)
 {
+    g_list_free_full (self->back_list, g_object_unref);
+    g_list_free_full (self->forward_list, g_object_unref);
     self->back_list = g_steal_pointer (&data->back_list);
 
     self->forward_list = g_steal_pointer (&data->forward_list);
@@ -223,6 +297,22 @@ nautilus_window_slot_restore_navigation_state (NautilusWindowSlot      *self,
     self->location_change_type = NAUTILUS_LOCATION_CHANGE_RELOAD;
 
     g_set_object (&self->pending_search_query, data->current_search_query);
+
+    GVariant *state = bookmark_miller_state (self->current_location_bookmark);
+    if (state != NULL)
+    {
+        if (self->pending_location != NULL)
+        {
+            g_clear_pointer (&self->pending_miller_state, g_variant_unref);
+            self->pending_miller_state = g_variant_ref (state);
+            self->pending_miller_focus = TRUE;
+        }
+        else if (self->miller_view != NULL && self->location != NULL &&
+                 g_file_equal (self->location, nautilus_bookmark_get_location (self->current_location_bookmark)))
+        {
+            nautilus_miller_view_restore_state (self->miller_view, state, focus_is_in_file_view (self));
+        }
+    }
 }
 
 NautilusNavigationState *
@@ -237,11 +327,14 @@ nautilus_window_slot_get_navigation_state (NautilusWindowSlot *self)
         return NULL;
     }
 
+    save_selection_for_history (self);
+    save_miller_state (self, FALSE);
+
     back_list = g_list_copy_deep (self->back_list,
-                                  (GCopyFunc) g_object_ref,
+                                  (GCopyFunc) copy_navigation_bookmark,
                                   NULL);
     forward_list = g_list_copy_deep (self->forward_list,
-                                     (GCopyFunc) g_object_ref,
+                                     (GCopyFunc) copy_navigation_bookmark,
                                      NULL);
 
     /* This data is used to restore a tab after it was closed.
@@ -252,7 +345,7 @@ nautilus_window_slot_get_navigation_state (NautilusWindowSlot *self)
     data = g_new0 (NautilusNavigationState, 1);
     data->back_list = back_list;
     data->forward_list = forward_list;
-    g_set_object (&data->current_location_bookmark, self->current_location_bookmark);
+    data->current_location_bookmark = copy_navigation_bookmark (self->current_location_bookmark, NULL);
     g_set_object (&data->current_search_query, nautilus_files_view_get_search_query (self->content_view));
 
     return data;
@@ -271,9 +364,19 @@ nautilus_window_slot_set_view_id (NautilusWindowSlot *self,
 
     if (self->miller_view != NULL || view_id == NAUTILUS_VIEW_MILLER_ID)
     {
+        gboolean restore_focus = focus_is_in_file_view (self);
+        save_miller_state (self, FALSE);
+        g_autoptr (GVariant) state = NULL;
+        if (self->pending_location == NULL && self->current_location_bookmark != NULL &&
+            view_id == NAUTILUS_VIEW_MILLER_ID)
+        {
+            GVariant *saved = bookmark_miller_state (self->current_location_bookmark);
+            if (saved != NULL) { state = g_variant_ref (saved); }
+        }
         GFile *current = self->pending_location != NULL ? self->pending_location : self->location;
         g_autoptr (GFile) location = current != NULL ? g_object_ref (current) :
             g_object_ref (nautilus_files_view_get_location (self->content_view));
+        if (!miller_state_matches_location (state, location)) { g_clear_pointer (&state, g_variant_unref); }
         g_autolist (NautilusFile) selection = NULL;
         GFile *action_location = nautilus_files_view_get_location (self->content_view);
         if (action_location != NULL && g_file_equal (action_location, location))
@@ -284,7 +387,14 @@ nautilus_window_slot_set_view_id (NautilusWindowSlot *self,
         create_and_bind_new_content_view (self, view_id);
         if (self->miller_view != NULL)
         {
-            nautilus_miller_view_set_location (self->miller_view, location, selection);
+            if (state != NULL)
+            {
+                nautilus_miller_view_restore_state (self->miller_view, state, restore_focus);
+            }
+            else
+            {
+                nautilus_miller_view_set_location (self->miller_view, location, selection);
+            }
         }
         else
         {
@@ -1623,6 +1733,15 @@ save_selection_for_history (NautilusWindowSlot *self)
         for (NautilusFileList *l = selection; l != NULL; l = l->next)
         {
             NautilusFile *file = l->data;
+            if (self->miller_view != NULL)
+            {
+                g_autoptr (GFile) location = nautilus_file_get_location (file);
+                g_autoptr (GFile) parent = g_file_get_parent (location);
+                if (parent == NULL || !g_file_equal (parent, nautilus_bookmark_get_location (self->current_location_bookmark)))
+                {
+                    continue;
+                }
+            }
             g_strv_builder_take (selected_uris, nautilus_file_get_uri (file));
         }
 
@@ -1662,6 +1781,17 @@ begin_location_change (NautilusWindowSlot         *self,
               || type == NAUTILUS_LOCATION_CHANGE_FORWARD
               || distance == 0);
 
+    g_autoptr (GVariant) miller_state = NULL;
+    gboolean miller_focus = focus_is_in_file_view (self);
+    if (type == NAUTILUS_LOCATION_CHANGE_BACK || type == NAUTILUS_LOCATION_CHANGE_FORWARD)
+    {
+        GList *history = type == NAUTILUS_LOCATION_CHANGE_BACK ? self->back_list : self->forward_list;
+        NautilusBookmark *bookmark = g_list_nth_data (history, distance);
+        GVariant *state = bookmark_miller_state (bookmark);
+        if (state != NULL) { miller_state = g_variant_ref (state); }
+    }
+    save_miller_state (self, TRUE);
+
     /* Retained Miller columns keep their directory monitors. The controller
      * cancels only the discarded suffix; stopping every view here would also
      * cancel the child that selection just revealed. */
@@ -1679,6 +1809,8 @@ begin_location_change (NautilusWindowSlot         *self,
     g_assert (self->pending_location == NULL);
 
     self->pending_location = g_object_ref (location);
+    self->pending_miller_state = g_steal_pointer (&miller_state);
+    self->pending_miller_focus = miller_focus;
     self->location_change_type = type;
     self->location_change_distance = distance;
     self->tried_mount = FALSE;
@@ -2244,7 +2376,15 @@ apply_pending_location_and_selection_on_view (NautilusWindowSlot *self)
 {
     if (self->miller_view != NULL)
     {
-        nautilus_miller_view_set_location (self->miller_view, self->pending_location, self->pending_selection);
+        if (miller_state_matches_location (self->pending_miller_state, self->pending_location))
+        {
+            nautilus_miller_view_restore_state (self->miller_view, self->pending_miller_state,
+                                              self->pending_miller_focus);
+        }
+        else
+        {
+            nautilus_miller_view_set_location (self->miller_view, self->pending_location, self->pending_selection);
+        }
     }
     else
     {
@@ -2289,6 +2429,7 @@ end_location_change (NautilusWindowSlot *self)
 static void
 free_location_change (NautilusWindowSlot *self)
 {
+    g_clear_pointer (&self->pending_miller_state, g_variant_unref);
     g_clear_object (&self->pending_location);
     g_clear_object (&self->pending_file_to_activate);
     nautilus_file_list_free (self->pending_selection);
@@ -2720,6 +2861,15 @@ nautilus_window_slot_update_for_new_location (NautilusWindowSlot *self)
     file = nautilus_file_get (new_location);
     nautilus_window_slot_update_bookmark (self, file);
 
+    /* The native transition creates a new current bookmark, including when
+     * Grid/List is displaying this history endpoint. Retain the Columns value
+     * for a later unchanged return to Columns. */
+    if (miller_state_matches_location (self->pending_miller_state, new_location))
+    {
+        g_object_set_data_full (G_OBJECT (self->current_location_bookmark), MILLER_HISTORY_STATE,
+                               g_variant_ref (self->pending_miller_state), (GDestroyNotify) g_variant_unref);
+    }
+
     update_history (self, self->location_change_type, new_location);
 
     /* Create a NautilusFile for this location, so we can catch it
@@ -2833,6 +2983,21 @@ unbind_content_view (NautilusWindowSlot *self)
     if (self->content_view != NULL)
     {
         g_signal_handlers_disconnect_by_data (self->content_view, self);
+        g_signal_handlers_disconnect_by_data (nautilus_files_view_get_private_model (self->content_view), self);
+    }
+}
+
+static void
+mode_selection_changed (GtkSelectionModel *model, guint position, guint n_items, NautilusWindowSlot *self)
+{
+    NautilusFilesView *view = self->content_view;
+    if (self->miller_view == NULL && !nautilus_files_view_get_loading (view) &&
+        !nautilus_files_view_is_selection_auto (view) && !self->transferring_query)
+    {
+        if (self->current_location_bookmark != NULL)
+        {
+            g_object_set_data (G_OBJECT (self->current_location_bookmark), MILLER_HISTORY_STATE, NULL);
+        }
     }
 }
 
@@ -2845,6 +3010,11 @@ bind_content_view (NautilusWindowSlot *self, NautilusFilesView *view)
     g_signal_connect_object (self->content_view, "notify::loading",
                              G_CALLBACK (view_is_loading_changed_cb), self,
                              G_CONNECT_DEFAULT);
+    /* FilesView coalesces its own signal. Observe the existing model after
+     * FilesView has classified automatic selection, before a mode change can
+     * restore an older snapshot. This connection is removed on unbind. */
+    g_signal_connect_object (nautilus_files_view_get_private_model (view), "selection-changed",
+                             G_CALLBACK (mode_selection_changed), self, G_CONNECT_DEFAULT);
 
     /* Note that this is not bidirectional and that we may also change
      * :search-visible alone, e.g. when clicking the search button. */
@@ -2894,6 +3064,15 @@ miller_location_requested (NautilusMillerView *miller, GFile *location, Nautilus
 }
 
 static void
+miller_location_changing (NautilusMillerView *miller, GFile *location, NautilusWindowSlot *self)
+{
+    if (!g_file_equal (nautilus_miller_view_get_location (miller), location))
+    {
+        save_miller_state (self, TRUE);
+    }
+}
+
+static void
 clear_content_view (NautilusWindowSlot *self)
 {
     unbind_content_view (self);
@@ -2929,6 +3108,8 @@ create_and_bind_new_content_view (NautilusWindowSlot *self, guint view_id)
             G_CALLBACK (miller_active_view_changed), self, G_CONNECT_DEFAULT);
         g_signal_connect_object (self->miller_view, "location-requested",
             G_CALLBACK (miller_location_requested), self, G_CONNECT_DEFAULT);
+        g_signal_connect_object (self->miller_view, "location-changing",
+            G_CALLBACK (miller_location_changing), self, G_CONNECT_DEFAULT);
         GFile *location = self->pending_location != NULL ? self->pending_location : self->location;
         if (location != NULL)
         {

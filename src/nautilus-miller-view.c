@@ -63,7 +63,7 @@ struct _NautilusMillerView
     gboolean restoring, restore_focus;
 };
 G_DEFINE_TYPE (NautilusMillerView, nautilus_miller_view, ADW_TYPE_BIN)
-enum { ACTIVE_VIEW_CHANGED, LOCATION_REQUESTED, LAST_SIGNAL };
+enum { ACTIVE_VIEW_CHANGED, LOCATION_CHANGING, LOCATION_REQUESTED, LAST_SIGNAL };
 static guint signals[LAST_SIGNAL];
 
 static void reconcile (NautilusMillerView *self, GFile *location, NautilusFileList *selection, gboolean preserve_focus, gboolean reveal);
@@ -202,6 +202,7 @@ request_location (NautilusMillerView *self, GFile *location, gboolean preserve_f
 {
     g_autoptr (GFile) target = g_object_ref (location);
     cancel_restore (self);
+    g_signal_emit (self, signals[LOCATION_CHANGING], 0, target);
     g_set_object (&self->user_location, target);
     reconcile (self, target, NULL, preserve_focus, reveal);
     g_signal_emit (self, signals[LOCATION_REQUESTED], 0, target);
@@ -303,6 +304,7 @@ static void
 focus_leave (GtkEventControllerFocus *controller, MillerColumn *column)
 {
     nautilus_miller_typeahead_reset (column->typeahead);
+    if (!column->owner->restoring) { column->owner->restore_focus = FALSE; }
 }
 
 static void
@@ -824,7 +826,15 @@ restore_columns (GtkWidget *widget, GdkFrameClock *clock, gpointer data)
         {
             g_autoptr (NautilusFilesView) view = g_object_ref (column->view);
             set_active_view (self, view);
-            if (self->restore_focus && self->active) { gtk_widget_grab_focus (GTK_WIDGET (view)); }
+            GtkRoot *root = gtk_widget_get_root (widget);
+            GtkWidget *focus = root != NULL ? gtk_root_get_focus (root) : NULL;
+            gboolean focus_allows_restore = focus == NULL ||
+                (gtk_widget_is_ancestor (focus, widget) && !GTK_IS_EDITABLE (focus) &&
+                 gtk_widget_get_ancestor (focus, GTK_TYPE_POPOVER) == NULL);
+            if (self->restore_focus && self->active && focus_allows_restore)
+            {
+                gtk_widget_grab_focus (GTK_WIDGET (view));
+            }
             if (generation != self->restore_generation) { self->restoring = FALSE; return G_SOURCE_REMOVE; }
         }
         self->restore_stage = 1;
@@ -984,6 +994,8 @@ nautilus_miller_view_class_init (NautilusMillerViewClass *klass)
     signals[ACTIVE_VIEW_CHANGED] = g_signal_new ("active-view-changed", G_TYPE_FROM_CLASS (klass),
         G_SIGNAL_RUN_LAST, 0, NULL, NULL, NULL, G_TYPE_NONE, 1, NAUTILUS_TYPE_FILES_VIEW);
     signals[LOCATION_REQUESTED] = g_signal_new ("location-requested", G_TYPE_FROM_CLASS (klass),
+        G_SIGNAL_RUN_LAST, 0, NULL, NULL, NULL, G_TYPE_NONE, 1, G_TYPE_FILE);
+    signals[LOCATION_CHANGING] = g_signal_new ("location-changing", G_TYPE_FROM_CLASS (klass),
         G_SIGNAL_RUN_LAST, 0, NULL, NULL, NULL, G_TYPE_NONE, 1, G_TYPE_FILE);
 }
 

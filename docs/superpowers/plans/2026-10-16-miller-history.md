@@ -35,9 +35,9 @@
 
 **Ownership:** strip owns one restoration tick/value and per-column completion tracking. Wait for loading to finish before applying native automatic selections, then restore adjustment values after layout; GTK clamps out-of-range values. Hold temporary references across callbacks. Cancel on new direct navigation, nonautomatic model selection, active-column change, manual press/scroll and disposal. Internal restore changes are guarded. No synchronous enumeration/metadata queries.
 
-- [ ] Write missing-API RED tests: endpoint/active-parent round trips, multiselection and vertical/horizontal positions, entry focus preserved, selected file removed while away, new selection/scroll/navigation before pending restore, teardown with pending restore.
-- [ ] Implement capture/restore and cancellation using existing FilesView/ListBase selection and GTK adjustments. No activation, extra path endpoint or history request may be emitted by restoration.
-- [ ] Run targeted tests under `with-test-session.py`, then full Meson suite/profile check. Commit with before/after evidence.
+- [x] Write missing-API RED tests: endpoint/active-parent round trips, multiselection and vertical/horizontal positions, entry focus preserved, selected file removed while away, new selection/scroll/navigation before pending restore, teardown with pending restore.
+- [x] Implement capture/restore and cancellation using existing FilesView/ListBase selection and GTK adjustments. No activation, extra path endpoint or history request may be emitted by restoration.
+- [x] Run targeted tests under `with-test-session.py`, then full Meson suite/profile check. Commit with before/after evidence.
 
 ### Task 2: Native bookmark, tab, view and search integration
 
@@ -47,9 +47,11 @@
 
 **Policy:** restoring active context does not steal an entry/popover's focus. Explicit incoming selection from reveal/navigation wins over a saved value. When returning from Grid/List at the same endpoint, a user's new selection belongs to that endpoint and becomes active there; unchanged automatic selection permits restoring prior Columns context. Save the original Columns state before search transfer; cancel without a new result restores it. Preserve native special-location fallback and apply only directory-valid result selection. Do not persist snapshots or create history entries for restoration/focus/width changes.
 
-- [ ] Add RED native slot/history tests: selected item/active-parent context and both scroll axes through Back/Forward; no history growth on focus/width/restore; independent duplicate/closed/reopened tabs; deleted selection; mode switching with correct endpoint-only transfer; search cancel returns prior branch/context. Add genuine Alt+Left/Right and entry-focus boundaries.
-- [ ] Integrate snapshot ownership at existing navigation boundaries. Fix only reproduced reentrancy/selection faults. Retain existing native Grid/List/history behavior and special-view preference.
-- [ ] Run targeted and full private-session Meson, Python fixture/session/deployment checks and profile validator; update docs with shipped policy/limits and commit.
+**Observed timing/identity constraints:** reuse the existing internal model accessor (already used by the strip) for a synchronous flat-view selection observer; disconnect it when unbinding. FilesView's idle notification is too late for immediate selection→mode changes. Explicit selection invalidates the bookmark's saved value, without a parallel per-slot selection flag. Retain valid destination snapshots when native Grid/List history creates a new current bookmark. Discard values whose endpoint differs from a bookmark that followed a rename; do not rewrite lexical URI identities.
+
+- [x] Add RED native slot/history tests: selected item/active-parent context and both scroll axes through Back/Forward; no history growth on focus/width/restore; independent duplicate/closed/reopened tabs; deleted selection; mode switching with correct endpoint-only transfer; search cancel returns prior branch/context. Add genuine Alt+Left/Right and entry-focus boundaries.
+- [x] Integrate snapshot ownership at existing navigation boundaries. Fix only reproduced reentrancy/selection faults. Retain existing native Grid/List/history behavior and special-view preference.
+- [x] Run targeted and full private-session Meson, Python fixture/session/deployment checks and profile validator; update docs with shipped policy/limits and commit.
 
 ### Task 3: Actual delayed backend and navigation-entry acceptance
 

@@ -42,3 +42,11 @@ The Anthy case sends actual `nihon`, Space and Enter keys. It observes Japanese 
 The restart command uses a private native dconf database and two separate application processes. The writer changes a real column width and the Preferences switch, then exits. The reader verifies the restored numeric control/size request, default width, preference row and a newly opened column using the persisted default. It checks a real dconf file was written and records distinct process IDs. The normal test run skips this case; a same-process settings instance is not restart evidence.
 
 Development input plan: [input and type-to-select](../superpowers/plans/2026-10-16-miller-input.md). See [acceptance](acceptance.md) for exact run evidence and remaining gates.
+
+## Native history input
+
+```sh
+python3 tools/miller/with-test-session.py -- meson test -C build-miller test-miller-state --print-errorlogs
+```
+
+This executable includes strip snapshot tests and native-window Back/Forward, view/search and tab integration. Its `keys-entry` case delivers actual Alt+Left/Right and Ctrl+L through the guarded private compositor, then verifies endpoint, action directory and retained location-entry focus. Other cases invoke native actions/APIs directly and assert directory identities, selections and GTK adjustments; they are not additional genuine-input coverage. Intentionally delayed enumeration, other navigation entry points, real remote services and accessibility remain separate acceptance requirements.
