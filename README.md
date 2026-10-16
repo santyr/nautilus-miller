@@ -14,6 +14,14 @@ Use the [Nautilus Miller GitHub issue tracker](https://github.com/santyr/nautilu
 
 Please keep reports about this fork in this repository. GNOME’s issue tracker, Discourse and design channels are not support channels for this project.
 
+## Support this project
+
+If you would like to support this personal project, you can send sats over Lightning.
+
+**Lightning address:** `sat@bolverker.com`
+
+![Lightning payment QR code for sat@bolverker.com](docs/miller/assets/lightning-support.png)
+
 ## Runtime dependencies
 
 Build dependencies and installation commands are documented in the [Miller guide](README.miller.md). Inherited runtime components include:
