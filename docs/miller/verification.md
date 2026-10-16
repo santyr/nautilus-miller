@@ -25,7 +25,16 @@ Deferred minor: in Grid mode the toolbar toggle still advertises List View while
 
 The canonical Fedora replacement RPM and matching extension, development, debug, and source RPMs built successfully. Package metadata and file lists retain `/usr/bin/nautilus`, the canonical desktop entry, both Nautilus and FileManager1 D-Bus services, and the canonical schema, and add `/usr/bin/nautilus-miller`.
 
+The final RPM was built from `a8e67bbe6b02b9e55cc9ca8c4c92e1b588d20e9e`. SHA-256:
+
+```text
+8dfc83f26eac769cc8bb4807d7fea94bc7be45a4082e20c00e6ae0892c2a8c90  nautilus-50.4-1.miller1.fc44.x86_64.rpm
+c9fcddd9fddca739e7aee02fbc8a6c3a70c6f109eacac05ae0cefeb43887746a  nautilus-extensions-50.4-1.miller1.fc44.x86_64.rpm
+```
+
 An unprivileged `dnf install --assumeno` resolved an upgrade of exactly Nautilus and nautilus-extensions from `50.4-1.fc44` to `50.4-1.miller1.fc44`. It also reported that installation would invalidate an existing offline transaction initiated by `dnf5daemon-server`. The user explicitly chose to install the fork now and clear that queued transaction. No package installation has been performed. Sudo requires the user's local password.
+
+Both stock RPMs were downloaded to `~/.local/state/nautilus-miller/stock-rpms` and their metadata checked. At the user's request, an executable, argument-free host entry point was created at `/home/sat/install-nautilus-miller.sh`; it delegates to the versioned installer with the explicit final RPM path and refuses execution as root, so preferences are written for the desktop user. Its shell syntax was checked. Installation and live default-handler acceptance remain pending the user's local sudo authentication.
 
 ## Execution decisions
 
