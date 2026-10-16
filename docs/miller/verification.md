@@ -32,9 +32,22 @@ The final RPM was built from `a8e67bbe6b02b9e55cc9ca8c4c92e1b588d20e9e`. SHA-256
 c9fcddd9fddca739e7aee02fbc8a6c3a70c6f109eacac05ae0cefeb43887746a  nautilus-extensions-50.4-1.miller1.fc44.x86_64.rpm
 ```
 
-An unprivileged `dnf install --assumeno` resolved an upgrade of exactly Nautilus and nautilus-extensions from `50.4-1.fc44` to `50.4-1.miller1.fc44`. It also reported that installation would invalidate an existing offline transaction initiated by `dnf5daemon-server`. The user explicitly chose to install the fork now and clear that queued transaction. No package installation has been performed. Sudo requires the user's local password.
+An unprivileged `dnf install --assumeno` resolved an upgrade of exactly Nautilus and nautilus-extensions from `50.4-1.fc44` to `50.4-1.miller1.fc44`. It also reported that installation would invalidate an existing offline transaction initiated by `dnf5daemon-server`. The user explicitly chose to install the fork now and clear that queued transaction, then ran the installer locally to supply sudo authentication.
 
-Both stock RPMs were downloaded to `~/.local/state/nautilus-miller/stock-rpms` and their metadata checked. At the user's request, an executable, argument-free host entry point was created at `/home/sat/install-nautilus-miller.sh`; it delegates to the versioned installer with the explicit final RPM path and refuses execution as root, so preferences are written for the desktop user. Its shell syntax was checked. Installation and live default-handler acceptance remain pending the user's local sudo authentication.
+Both stock RPMs were downloaded to `~/.local/state/nautilus-miller/stock-rpms` and their metadata checked. At the user's request, an executable, argument-free host entry point was created at `/home/sat/install-nautilus-miller.sh`; it delegates to the versioned installer with the explicit final RPM path and refuses execution as root, so preferences are written for the desktop user. Its shell syntax was checked.
+
+### Installed host acceptance — 2026-10-16
+
+- Installed main and extension packages: `50.4-1.miller1.fc44.x86_64`.
+- `rpm -V nautilus nautilus-extensions` exited successfully without reporting modified package files.
+- The running application resolves to `/usr/bin/nautilus`, owned by the Miller RPM. Both `org.gnome.Nautilus` and `org.freedesktop.FileManager1` resolve to that same running process.
+- Default directory handler: `org.gnome.Nautilus.desktop`. Default folder preference: `columns-view`. At acceptance the saved preference was List; it was restored to Columns as requested before opening the acceptance window.
+- Opening a disposable directory through `gio open` reached the fork. Launching `/usr/share/applications/org.gnome.Nautilus.desktop` with that directory succeeded.
+- A real FileManager1 `ShowItems` call targeted the last file in a disposable 200-file nested directory. The live accessibility tree showed five directory lists; the requested `row-199.txt` row had both SELECTED and SHOWING states, and its measured bounds were inside the visible window. FileManager1's `OpenLocations` contained the correct parent directory.
+- Closed only the acceptance-fixture windows, removed their disposable files, and left the installed app open at Home. Existing user windows were preserved.
+- The saved rollback record contains the original `50.4-1.fc44` main and extension packages, canonical directory handler, and original `list-view` preference. Restore with `tools/miller/restore-stock.sh` from this checkout.
+
+Public source and full upstream ancestry are published at https://github.com/santyr/nautilus-miller (`main`, with the implementation branch also published).
 
 ## Execution decisions
 
