@@ -22,7 +22,7 @@ static NautilusViewInfo
 get_view_info (NautilusListBase *base)
 {
     return (NautilusViewInfo) { NAUTILUS_VIEW_MILLER_ID, NAUTILUS_LIST_ZOOM_LEVEL_SMALL,
-        NAUTILUS_LIST_ZOOM_LEVEL_LARGE, NAUTILUS_LIST_ZOOM_LEVEL_MEDIUM };
+        NAUTILUS_LIST_ZOOM_LEVEL_LARGE, NAUTILUS_LIST_ZOOM_LEVEL_SMALL };
 }
 
 static guint
@@ -154,9 +154,12 @@ miller_grab_focus (GtkWidget *widget)
     NautilusViewModel *model = nautilus_list_base_get_model (NAUTILUS_LIST_BASE (widget));
     if (model == NULL || g_list_model_get_n_items (G_LIST_MODEL (model)) == 0)
     {
-        GtkWidget *scroller = nautilus_list_base_get_scrolled_window (NAUTILUS_LIST_BASE (widget));
-        gtk_widget_set_focusable (scroller, TRUE);
-        return gtk_widget_grab_focus (scroller);
+        GtkWidget *list = GTK_WIDGET (NAUTILUS_MILLER_COLUMN (widget)->list);
+        GtkRoot *root = gtk_widget_get_root (list);
+        if (root == NULL) { return FALSE; }
+        gtk_widget_set_focusable (list, TRUE);
+        gtk_root_set_focus (root, list);
+        return TRUE;
     }
     return GTK_WIDGET_CLASS (nautilus_miller_column_parent_class)->grab_focus (widget);
 }
@@ -180,7 +183,7 @@ static void
 nautilus_miller_column_init (NautilusMillerColumn *self)
 {
     self->sort_attribute = g_quark_from_static_string ("name");
-    self->zoom = NAUTILUS_LIST_ZOOM_LEVEL_MEDIUM;
+    self->zoom = NAUTILUS_LIST_ZOOM_LEVEL_SMALL;
     GtkListItemFactory *factory = gtk_signal_list_item_factory_new ();
     g_signal_connect (factory, "setup", G_CALLBACK (setup_cell), self);
     g_signal_connect (factory, "bind", G_CALLBACK (bind_cell), self);

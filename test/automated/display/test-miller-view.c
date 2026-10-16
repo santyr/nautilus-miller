@@ -10,6 +10,9 @@
 #include "nautilus-resources.h"
 #include "nautilus-tag-manager.h"
 #include "nautilus-window-slot.h"
+#include "nautilus-window.h"
+#include "nautilus-query.h"
+#include "nautilus-view-model.h"
 
 static void
 collect_views (GtkWidget *widget, GPtrArray *views)
@@ -114,6 +117,17 @@ test_deep_path_and_replacement (void)
     for (guint i = 0; i + 1 < views->len; i++)
     {
         g_autolist (NautilusFile) selection = nautilus_files_view_get_selection (views->pdata[i]);
+        gint64 highlight_deadline = g_get_monotonic_time () + 5 * G_TIME_SPAN_SECOND;
+        /* A retained /tmp model may learn about this newly created fixture
+         * through its monitor after enumeration has already completed. */
+        while (selection == NULL && g_get_monotonic_time () < highlight_deadline)
+        {
+            g_main_context_iteration (NULL, FALSE);
+            g_usleep (1000);
+            selection = nautilus_files_view_get_selection (views->pdata[i]);
+        }
+        g_autofree char *column_uri = g_file_get_uri (nautilus_files_view_get_location (views->pdata[i]));
+        g_test_message ("Ancestor %u %s: %u selected, %u rows", i, column_uri, g_list_length (selection), g_list_model_get_n_items (G_LIST_MODEL (nautilus_files_view_get_private_model (views->pdata[i]))));
         g_assert_cmpuint (g_list_length (selection), ==, 1);
         g_autoptr (GFile) selected_location = nautilus_file_get_location (selection->data);
         g_assert_true (g_file_equal (selected_location,
@@ -252,22 +266,208 @@ test_error_is_local (void)
     test_clear_tmp_dir ();
 }
 
+static void
+settle_slot (NautilusWindowSlot *slot)
+{
+    gint64 deadline = g_get_monotonic_time () + 15 * G_TIME_SPAN_SECOND;
+    while (TRUE)
+    {
+        NautilusFilesView *view = nautilus_window_slot_get_current_view (slot);
+        gboolean loading = nautilus_window_slot_get_loading (slot) || nautilus_window_slot_get_pending_location (slot) != NULL || view == NULL ||
+                           nautilus_files_view_get_loading (view);
+        if (!loading && !g_main_context_pending (NULL)) { return; }
+        g_assert_cmpint (g_get_monotonic_time (), <, deadline);
+        g_main_context_iteration (NULL, FALSE);
+        g_usleep (1000);
+    }
+}
+
+static void
+test_slot_navigation_and_switching (void)
+{
+    g_settings_set_enum (nautilus_preferences, NAUTILUS_PREFERENCES_DEFAULT_FOLDER_VIEWER, 1);
+    g_autoptr (NautilusWindowSlot) slot = nautilus_window_slot_new (NAUTILUS_MODE_BROWSE);
+    GtkWidget *window = gtk_window_new ();
+    gtk_window_set_child (GTK_WINDOW (window), GTK_WIDGET (slot));
+    g_autoptr (GFile) root = g_file_new_for_path (test_get_tmp_dir ());
+    g_autoptr (GFile) child = g_file_get_child (root, "child");
+    g_assert_true (g_file_make_directory (child, NULL, NULL));
+    nautilus_window_slot_open_location_full (slot, root, NULL);
+    settle_slot (slot);
+    g_assert_true (gtk_widget_activate_action (GTK_WIDGET (slot), "slot.files-view-mode", "u", 4));
+    settle_slot (slot);
+    NautilusFilesView *parent = nautilus_window_slot_get_current_view (slot);
+    g_assert_cmpuint (nautilus_files_view_get_view_id (parent), ==, 4);
+    select_path (parent, child, FALSE);
+    settle_slot (slot);
+    g_assert_true (g_file_equal (nautilus_window_slot_get_location (slot), child));
+    g_assert_true (nautilus_window_slot_get_current_view (slot) == parent);
+    g_assert_false (nautilus_window_slot_get_loading (slot));
+    g_assert_false (nautilus_window_slot_get_allow_stop (slot));
+    g_assert_true (gtk_widget_activate_action (GTK_WIDGET (slot), "slot.back", NULL));
+    settle_slot (slot);
+    g_assert_true (g_file_equal (nautilus_window_slot_get_location (slot), root));
+    g_assert_true (gtk_widget_activate_action (GTK_WIDGET (slot), "slot.forward", NULL));
+    settle_slot (slot);
+    g_assert_true (g_file_equal (nautilus_window_slot_get_location (slot), child));
+    const guint modes[] = { 2, 1, 4 };
+    for (guint i = 0; i < G_N_ELEMENTS (modes); i++)
+    {
+        g_assert_true (gtk_widget_activate_action (GTK_WIDGET (slot), "slot.files-view-mode", "u", modes[i]));
+        settle_slot (slot);
+        g_assert_cmpuint (nautilus_files_view_get_view_id (nautilus_window_slot_get_current_view (slot)), ==, modes[i]);
+        g_assert_true (g_file_equal (nautilus_window_slot_get_location (slot), child));
+    }
+    gtk_window_destroy (GTK_WINDOW (window));
+    test_clear_tmp_dir ();
+}
+
+static void
+after_paint (GdkFrameClock *clock, gboolean *painted)
+{
+    *painted = TRUE;
+}
+
+static void
+wait_frame (GtkWidget *widget)
+{
+    GdkFrameClock *clock = gtk_widget_get_frame_clock (widget);
+    gboolean painted = FALSE;
+    gulong handler = g_signal_connect (clock, "after-paint", G_CALLBACK (after_paint), &painted);
+    gtk_widget_queue_draw (widget);
+    gdk_frame_clock_request_phase (clock, GDK_FRAME_CLOCK_PHASE_PAINT);
+    gint64 deadline = g_get_monotonic_time () + 3 * G_TIME_SPAN_SECOND;
+    while (!painted && g_get_monotonic_time () < deadline)
+    {
+        g_main_context_iteration (NULL, FALSE);
+        g_usleep (1000);
+    }
+    g_signal_handler_disconnect (clock, handler);
+    if (!painted) { g_test_message ("The session did not paint a frame within the snapshot timeout"); }
+}
+
+static void
+save_window_snapshot (GtkWidget *window)
+{
+    const char *filename = g_getenv ("MILLER_SCREENSHOT_PATH");
+    if (filename == NULL) { return; }
+    g_autoptr (GdkPaintable) paintable = gtk_widget_paintable_new (window);
+    GtkSnapshot *snapshot = gtk_snapshot_new ();
+    gdk_paintable_snapshot (paintable, GDK_SNAPSHOT (snapshot),
+        gtk_widget_get_width (window), gtk_widget_get_height (window));
+    g_autoptr (GskRenderNode) node = gtk_snapshot_free_to_node (snapshot);
+    g_assert_nonnull (node);
+    GskRenderer *renderer = gtk_native_get_renderer (GTK_NATIVE (window));
+    g_autoptr (GdkTexture) texture = gsk_renderer_render_texture (renderer, node, NULL);
+    g_assert_true (gdk_texture_save_to_png (texture, filename));
+}
+
+static void
+test_full_window_operations (void)
+{
+    g_settings_set_enum (nautilus_preferences, NAUTILUS_PREFERENCES_DEFAULT_FOLDER_VIEWER, 4);
+    NautilusWindow *window = nautilus_window_new ();
+    gtk_window_set_default_size (GTK_WINDOW (window), 1280, 680);
+    g_autoptr (GFile) root = g_file_new_for_path (test_get_tmp_dir ());
+    g_autoptr (GFile) child = g_file_get_child (root, "Projects");
+    g_autoptr (GFile) source = g_file_get_child (root, "notes.txt");
+    g_assert_true (g_file_make_directory (child, NULL, NULL));
+    g_assert_true (g_file_replace_contents (source, "miller-test", 11, NULL, FALSE, 0, NULL, NULL, NULL));
+    nautilus_window_open_location_full (window, root, 0, NULL);
+    gtk_window_present (GTK_WINDOW (window));
+    g_autoptr (NautilusWindowSlot) slot = NULL;
+    g_object_get (window, "active-slot", &slot, NULL);
+    settle_slot (slot);
+    g_autoptr (GPtrArray) columns = g_ptr_array_new ();
+    collect_views (GTK_WIDGET (slot), columns);
+    NautilusFilesView *parent = NULL;
+    for (guint i = 0; i < columns->len; i++)
+    {
+        NautilusFilesView *candidate = columns->pdata[i];
+        if (g_file_equal (nautilus_files_view_get_location (candidate), root)) { parent = candidate; }
+    }
+    g_assert_nonnull (parent);
+    gtk_widget_grab_focus (GTK_WIDGET (parent));
+    select_path (parent, source, FALSE);
+    settle_slot (slot);
+    GAction *copy_action = g_action_map_lookup_action (G_ACTION_MAP (nautilus_files_view_get_private_action_group (parent)), "copy");
+    g_assert_true (g_action_get_enabled (copy_action));
+    g_assert_true (gtk_widget_activate_action (GTK_WIDGET (parent), "view.copy", NULL));
+    select_path (parent, child, FALSE);
+    settle_slot (slot);
+    g_assert_true (send_arrow (parent, GDK_KEY_Right));
+    settle_slot (slot);
+    NautilusFilesView *destination = nautilus_window_slot_get_current_view (slot);
+    g_assert_true (g_file_equal (nautilus_files_view_get_location (destination), child));
+    g_autofree char *target_uri = nautilus_files_view_get_backing_uri (destination);
+    g_autofree char *expected_target = g_file_get_uri (child);
+    g_assert_cmpstr (target_uri, ==, expected_target);
+    g_autofree char *source_uri = g_file_get_uri (source);
+    GList source_uris = { .data = source_uri };
+    /* Wayland clipboard ownership needs a real user-input serial. Exercise
+     * the shared transfer implementation with the active column's backing URI. */
+    nautilus_files_view_move_copy_items (destination, &source_uris, target_uri, GDK_ACTION_COPY);
+    g_autoptr (GFile) copied = g_file_get_child (child, "notes.txt");
+    gint64 deadline = g_get_monotonic_time () + 15 * G_TIME_SPAN_SECOND;
+    while (!g_file_query_exists (copied, NULL))
+    {
+        g_assert_cmpint (g_get_monotonic_time (), <, deadline);
+        g_main_context_iteration (NULL, FALSE);
+        g_usleep (1000);
+    }
+    g_autoptr (NautilusFile) copied_file = nautilus_file_get (copied);
+    while (nautilus_view_model_get_item_for_file (nautilus_files_view_get_private_model (destination), copied_file) == NULL)
+    {
+        g_assert_cmpint (g_get_monotonic_time (), <, deadline);
+        g_main_context_iteration (NULL, FALSE);
+        g_usleep (1000);
+    }
+    settle_slot (slot);
+    g_assert_true (g_file_query_exists (source, NULL));
+    if (g_getenv ("MILLER_SCREENSHOT_PATH") != NULL)
+    {
+        wait_frame (GTK_WIDGET (window));
+        wait_frame (GTK_WIDGET (window));
+        save_window_snapshot (GTK_WIDGET (window));
+    }
+    nautilus_window_new_tab (window);
+    g_autoptr (NautilusWindowSlot) second_slot = NULL;
+    g_object_get (window, "active-slot", &second_slot, NULL);
+    g_assert_true (second_slot != slot);
+    settle_slot (second_slot);
+    g_object_set (window, "active-slot", slot, NULL);
+    g_assert_true (nautilus_window_slot_get_active (slot));
+    g_assert_false (nautilus_window_slot_get_active (second_slot));
+    g_autoptr (NautilusQuery) query = nautilus_query_new ();
+    nautilus_query_set_text (query, "notes");
+    nautilus_query_set_location (query, child);
+    nautilus_window_slot_search (slot, query);
+    settle_slot (slot);
+    g_assert_cmpuint (nautilus_files_view_get_view_id (nautilus_window_slot_get_current_view (slot)), !=, 4);
+    g_assert_cmpuint (g_settings_get_enum (nautilus_preferences, NAUTILUS_PREFERENCES_DEFAULT_FOLDER_VIEWER), ==, 4);
+    g_assert_true (gtk_widget_activate_action (GTK_WIDGET (slot), "slot.search-visible", NULL));
+    settle_slot (slot);
+    g_assert_cmpuint (nautilus_files_view_get_view_id (nautilus_window_slot_get_current_view (slot)), ==, 4);
+    gtk_window_destroy (GTK_WINDOW (window));
+    test_clear_tmp_dir ();
+}
+
 int
 main (int argc, char **argv)
 {
-    gtk_test_init (&argc, &argv, NULL);
+    g_test_init (&argc, &argv, NULL);
     nautilus_register_resource ();
-    gtk_icon_theme_add_resource_path (gtk_icon_theme_get_for_display (gdk_display_get_default ()),
-                                      "/org/gnome/nautilus/icons");
-    GtkCssProvider *css = gtk_css_provider_new ();
-    gtk_css_provider_load_from_resource (css, "/org/gnome/nautilus/style.css");
-    gtk_style_context_add_provider_for_display (gdk_display_get_default (), GTK_STYLE_PROVIDER (css), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
-    g_object_unref (css);
-    nautilus_ensure_extension_points ();
     nautilus_global_preferences_init ();
     g_autoptr (NautilusTagManager) tags = nautilus_tag_manager_new_dummy ();
     test_init_config_dir ();
     g_autoptr (NautilusApplication) app = nautilus_application_new ();
+    g_application_set_flags (G_APPLICATION (app), g_application_get_flags (G_APPLICATION (app)) | G_APPLICATION_NON_UNIQUE);
+    g_assert_true (g_application_register (G_APPLICATION (app), NULL, NULL));
+    gtk_icon_theme_add_resource_path (gtk_icon_theme_get_for_display (gdk_display_get_default ()),
+                                      "/org/gnome/nautilus/icons");
+    nautilus_ensure_extension_points ();
+    g_test_add_func ("/miller/window/operations-tabs-search", test_full_window_operations);
+    g_test_add_func ("/miller/slot/navigation-and-switching", test_slot_navigation_and_switching);
     g_test_add_func ("/miller/view/error-is-local", test_error_is_local);
     g_test_add_func ("/miller/view/keyboard-and-focus", test_keyboard_and_focus);
     g_test_add_func ("/miller/view/branch-selection", test_branch_selection);

@@ -728,6 +728,7 @@ files_view_end_loading (NautilusFilesView *self,
                         gboolean           all_files_seen)
 {
     update_cut_status (self);
+    if (self->managed_context) { nautilus_files_view_update_actions_state (self); }
 }
 
 /**
@@ -3054,6 +3055,7 @@ nautilus_files_view_set_action_context (NautilusFilesView *view, gboolean active
     if (root == NULL) { return; }
     if (active)
     {
+        nautilus_files_view_update_actions_state (view);
         nautilus_files_view_update_context_menus (view);
         nautilus_files_view_update_toolbar_menus (view);
         schedule_update_context_menus (view);

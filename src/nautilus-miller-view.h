@@ -9,6 +9,7 @@ NautilusMillerView *nautilus_miller_view_new (NautilusWindowSlot *slot);
 void nautilus_miller_view_set_location (NautilusMillerView *self, GFile *location, NautilusFileList *selection);
 NautilusFilesView *nautilus_miller_view_get_active_view (NautilusMillerView *self);
 GFile *nautilus_miller_view_get_location (NautilusMillerView *self);
+gboolean nautilus_miller_view_get_loading (NautilusMillerView *self);
 void nautilus_miller_view_set_active (NautilusMillerView *self, gboolean active);
 void nautilus_miller_view_stop_loading (NautilusMillerView *self);
 void nautilus_miller_view_reload (NautilusMillerView *self);

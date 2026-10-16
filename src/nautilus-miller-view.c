@@ -3,6 +3,8 @@
 #include "nautilus-miller-path.h"
 #include "nautilus-files-view.h"
 #include "nautilus-file.h"
+#include "nautilus-directory.h"
+#include "nautilus-view-model.h"
 #include "nautilus-view-info.h"
 #include "nautilus-window-slot.h"
 #include <glib/gi18n.h>
@@ -12,11 +14,14 @@ typedef struct
     NautilusMillerView *owner; /* borrowed; owned by the strip */
     NautilusFilesView *view;
     GFile *location;
+    NautilusFile *branch_file;
     GtkWidget *box;
     GtkWidget *grip;
     guint selection_idle;
     int width;
     int drag_width;
+    gboolean stopped;
+    gboolean branch_reload_requested;
 } MillerColumn;
 
 struct _NautilusMillerView
@@ -32,6 +37,7 @@ struct _NautilusMillerView
     gboolean active;
     gboolean reconciling;
     guint scroll_tick;
+    guint scroll_frames;
 };
 G_DEFINE_TYPE (NautilusMillerView, nautilus_miller_view, ADW_TYPE_BIN)
 enum { ACTIVE_VIEW_CHANGED, LOCATION_REQUESTED, LAST_SIGNAL };
@@ -76,6 +82,7 @@ static gboolean
 scroll_to_end (GtkWidget *widget, GdkFrameClock *clock, gpointer data)
 {
     NautilusMillerView *self = data;
+    if (self->scroll_frames++ == 0) { return G_SOURCE_CONTINUE; }
     GtkAdjustment *adjustment = gtk_scrolled_window_get_hadjustment (self->scroller);
     gtk_adjustment_set_value (adjustment, gtk_adjustment_get_upper (adjustment) -
                              gtk_adjustment_get_page_size (adjustment));
@@ -203,7 +210,51 @@ column_free (gpointer data)
     gtk_box_remove (column->owner->strip, column->grip);
     g_object_unref (column->view);
     g_object_unref (column->location);
+    g_clear_object (&column->branch_file);
     g_free (column);
+}
+
+static void
+restore_branch_selection (MillerColumn *column)
+{
+    if (column->branch_file == NULL || column->selection_idle != 0) { return; }
+    g_autolist (NautilusFile) selection = nautilus_files_view_get_selection (column->view);
+    if (selection != NULL && !nautilus_files_view_is_selection_auto (column->view)) { return; }
+    if (selection != NULL && selection->next == NULL && selection->data == column->branch_file) { return; }
+    NautilusViewModel *model = nautilus_files_view_get_private_model (column->view);
+    if (!nautilus_files_view_get_loading (column->view) &&
+        nautilus_view_model_get_item_for_file (model, column->branch_file) == NULL &&
+        !column->branch_reload_requested)
+    {
+        /* A directory may have been cached while no monitor was installed.
+         * An explicitly opened child is evidence that the cache needs refresh. */
+        column->branch_reload_requested = TRUE;
+        g_autoptr (NautilusDirectory) directory = nautilus_directory_get (column->location);
+        nautilus_directory_force_reload (directory);
+    }
+    GList branch = { .data = column->branch_file };
+    nautilus_files_view_set_selection (column->view, &branch, TRUE);
+}
+
+static void
+column_files_added (NautilusFilesView *view, GList *files, MillerColumn *column)
+{
+    restore_branch_selection (column);
+}
+
+static void
+column_end_loading (NautilusFilesView *view, gboolean all_seen, MillerColumn *column)
+{
+    if (all_seen) { restore_branch_selection (column); }
+}
+
+static void
+column_loading_changed (NautilusFilesView *view, GParamSpec *pspec, MillerColumn *column)
+{
+    if (!column->owner->reconciling)
+    {
+        g_object_notify (G_OBJECT (column->owner), "loading");
+    }
 }
 
 static MillerColumn *
@@ -248,6 +299,9 @@ column_new (NautilusMillerView *self, GFile *location)
     gtk_event_controller_set_propagation_phase (keys, GTK_PHASE_CAPTURE);
     g_signal_connect (keys, "key-pressed", G_CALLBACK (key_pressed), column);
     gtk_widget_add_controller (GTK_WIDGET (column->view), keys);
+    g_signal_connect_after (column->view, "add-files", G_CALLBACK (column_files_added), column);
+    g_signal_connect_after (column->view, "end-loading", G_CALLBACK (column_end_loading), column);
+    g_signal_connect (column->view, "notify::loading", G_CALLBACK (column_loading_changed), column);
     g_signal_connect (column->view, "selection-changed", G_CALLBACK (selection_changed), column);
     g_signal_connect (column->view, "column-activate-directory", G_CALLBACK (activate_directory), column);
     gtk_box_append (self->strip, column->box);
@@ -276,10 +330,12 @@ reconcile (NautilusMillerView *self, GFile *location, NautilusFileList *selectio
         MillerColumn *column = self->columns->pdata[i];
         g_autoptr (NautilusFile) child = i + 1 < count ? nautilus_file_get (
             nautilus_miller_path_get_column (self->path, i + 1)) : NULL;
+        if (g_set_object (&column->branch_file, child)) { column->branch_reload_requested = FALSE; }
         nautilus_files_view_set_branch_file (column->view, child);
-        if (i >= common)
+        if (i >= common || column->stopped)
         {
             nautilus_files_view_set_location (column->view, column->location);
+            column->stopped = FALSE;
         }
         if (child != NULL)
         {
@@ -297,7 +353,9 @@ reconcile (NautilusMillerView *self, GFile *location, NautilusFileList *selectio
         set_active_view (self, last->view);
     }
     self->reconciling = FALSE;
+    g_object_notify (G_OBJECT (self), "loading");
     if (self->scroll_tick != 0) { gtk_widget_remove_tick_callback (GTK_WIDGET (self), self->scroll_tick); }
+    self->scroll_frames = 0;
     self->scroll_tick = gtk_widget_add_tick_callback (GTK_WIDGET (self), scroll_to_end, self, NULL);
 }
 
@@ -316,6 +374,17 @@ GFile *nautilus_miller_view_get_location (NautilusMillerView *self)
     return count > 0 ? nautilus_miller_path_get_column (self->path, count - 1) : NULL;
 }
 
+gboolean
+nautilus_miller_view_get_loading (NautilusMillerView *self)
+{
+    for (guint i = 0; i < self->columns->len; i++)
+    {
+        MillerColumn *column = self->columns->pdata[i];
+        if (nautilus_files_view_get_loading (column->view)) { return TRUE; }
+    }
+    return FALSE;
+}
+
 void
 nautilus_miller_view_set_active (NautilusMillerView *self, gboolean active)
 {
@@ -329,6 +398,7 @@ nautilus_miller_view_stop_loading (NautilusMillerView *self)
     for (guint i = 0; i < self->columns->len; i++)
     {
         MillerColumn *column = self->columns->pdata[i];
+        column->stopped = TRUE;
         nautilus_files_view_stop_loading (column->view);
     }
 }
@@ -388,10 +458,23 @@ nautilus_miller_view_focus (GtkWidget *widget, GtkDirectionType direction)
 }
 
 static void
+nautilus_miller_view_get_property (GObject *object, guint id, GValue *value, GParamSpec *pspec)
+{
+    if (id == 1)
+    {
+        g_value_set_boolean (value, nautilus_miller_view_get_loading (NAUTILUS_MILLER_VIEW (object)));
+    }
+    else { G_OBJECT_WARN_INVALID_PROPERTY_ID (object, id, pspec); }
+}
+
+static void
 nautilus_miller_view_class_init (NautilusMillerViewClass *klass)
 {
     GTK_WIDGET_CLASS (klass)->grab_focus = nautilus_miller_view_grab_focus;
     GTK_WIDGET_CLASS (klass)->focus = nautilus_miller_view_focus;
+    G_OBJECT_CLASS (klass)->get_property = nautilus_miller_view_get_property;
+    g_object_class_install_property (G_OBJECT_CLASS (klass), 1,
+        g_param_spec_boolean ("loading", NULL, NULL, FALSE, G_PARAM_READABLE | G_PARAM_STATIC_STRINGS));
     G_OBJECT_CLASS (klass)->dispose = nautilus_miller_view_dispose;
     G_OBJECT_CLASS (klass)->finalize = nautilus_miller_view_finalize;
     signals[ACTIVE_VIEW_CHANGED] = g_signal_new ("active-view-changed", G_TYPE_FROM_CLASS (klass),

@@ -8,6 +8,8 @@
 
 #include "nautilus-toolbar-menu-sections.h"
 #include "nautilus-window-slot.h"
+#include "nautilus-view-info.h"
+#include <glib/gi18n.h>
 
 struct _NautilusViewControls
 {
@@ -196,4 +198,14 @@ static void
 nautilus_view_controls_init (NautilusViewControls *self)
 {
     gtk_widget_init_template (GTK_WIDGET (self));
+    g_autoptr (GMenu) modes = g_menu_new ();
+    const char *labels[] = { _("List View"), _("Grid View"), _("Columns View") };
+    const guint ids[] = { NAUTILUS_VIEW_LIST_ID, NAUTILUS_VIEW_GRID_ID, NAUTILUS_VIEW_MILLER_ID };
+    for (guint i = 0; i < G_N_ELEMENTS (ids); i++)
+    {
+        g_autoptr (GMenuItem) item = g_menu_item_new (labels[i], NULL);
+        g_menu_item_set_action_and_target (item, "slot.files-view-mode", "u", ids[i]);
+        g_menu_append_item (modes, item);
+    }
+    g_menu_append_section (G_MENU (self->view_menu), _("View"), G_MENU_MODEL (modes));
 }
