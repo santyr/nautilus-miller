@@ -179,6 +179,9 @@ nautilus_preferences_dialog_setup (GtkBuilder *builder)
                        NAUTILUS_PREFERENCES_DIALOG_LIST_VIEW_USE_TREE_WIDGET,
                        NAUTILUS_PREFERENCES_LIST_VIEW_USE_TREE);
     bind_builder_bool (builder, nautilus_preferences,
+                       "miller_type_to_select_row",
+                       NAUTILUS_PREFERENCES_MILLER_TYPE_TO_SELECT);
+    bind_builder_bool (builder, nautilus_preferences,
                        NAUTILUS_PREFERENCES_DIALOG_CREATE_LINK_WIDGET,
                        NAUTILUS_PREFERENCES_SHOW_CREATE_LINK);
     bind_builder_bool (builder, nautilus_preferences,

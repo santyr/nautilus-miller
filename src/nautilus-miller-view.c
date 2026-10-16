@@ -9,6 +9,7 @@
 #include "nautilus-window-slot.h"
 #include "nautilus-global-preferences.h"
 #include "nautilus-miller-widths.h"
+#include "nautilus-miller-typeahead.h"
 #include "nautilus-view-item.h"
 #include <glib/gi18n.h>
 
@@ -26,8 +27,10 @@ typedef struct
     GtkWidget *fit_button;
     GtkWidget *reset_button;
     GtkWidget *default_button;
+    NautilusMillerTypeahead *typeahead;
     guint selection_idle;
     guint64 selection_scroll_generation;
+    guint64 selection_action_generation;
     int width;
     int drag_width;
     gboolean stopped;
@@ -51,6 +54,7 @@ struct _NautilusMillerView
     guint reveal_primary;
     guint reveal_secondary;
     guint64 scroll_generation;
+    guint64 action_generation;
 };
 G_DEFINE_TYPE (NautilusMillerView, nautilus_miller_view, ADW_TYPE_BIN)
 enum { ACTIVE_VIEW_CHANGED, LOCATION_REQUESTED, LAST_SIGNAL };
@@ -77,8 +81,11 @@ static void
 set_active_view (NautilusMillerView *self, NautilusFilesView *view)
 {
     if (self->active_view == view) { return; }
+    self->action_generation++;
     if (self->active_view != NULL)
     {
+        MillerColumn *previous = find_column (self, self->active_view, NULL);
+        if (previous != NULL) { nautilus_miller_typeahead_reset (previous->typeahead); }
         nautilus_files_view_set_action_context (self->active_view, FALSE);
         gtk_widget_remove_css_class (GTK_WIDGET (self->active_view), "miller-active");
     }
@@ -182,7 +189,8 @@ selection_idle (gpointer data)
     MillerColumn *column = data;
     NautilusMillerView *self = column->owner;
     column->selection_idle = 0;
-    if (self->reconciling || nautilus_files_view_is_selection_auto (column->view))
+    if (self->reconciling || nautilus_files_view_is_selection_auto (column->view) ||
+        column->selection_action_generation != self->action_generation)
     {
         return G_SOURCE_REMOVE;
     }
@@ -210,6 +218,7 @@ selection_model_changed (GtkSelectionModel *model, guint position, guint count, 
     if (!column->owner->reconciling && !nautilus_files_view_is_selection_auto (column->view))
     {
         column->selection_scroll_generation = column->owner->scroll_generation;
+        column->selection_action_generation = column->owner->action_generation;
     }
 }
 
@@ -235,7 +244,8 @@ selection_changed (NautilusFilesView *view, MillerColumn *column)
     /* FilesView coalesces selection notifications and also sends them after
      * model updates. An unchanged ancestor selection is not new navigation
      * and must not reclaim action ownership from a child we just entered. */
-    if (same || column->owner->reconciling || nautilus_files_view_is_selection_auto (view)) { return; }
+    if (same || column->owner->reconciling || nautilus_files_view_is_selection_auto (view) ||
+        column->selection_action_generation != column->owner->action_generation) { return; }
     if (column->selection_idle == 0)
     {
         column->selection_idle = g_idle_add (selection_idle, column);
@@ -265,9 +275,37 @@ focus_enter (GtkEventControllerFocus *controller, MillerColumn *column)
 }
 
 static void
+focus_leave (GtkEventControllerFocus *controller, MillerColumn *column)
+{
+    nautilus_miller_typeahead_reset (column->typeahead);
+}
+
+static void
 pointer_pressed (GtkGestureClick *gesture, int n_press, double x, double y, MillerColumn *column)
 {
+    nautilus_miller_typeahead_reset (column->typeahead);
     set_active_view (column->owner, column->view);
+}
+
+static gboolean
+typeahead_event (GtkEventControllerLegacy *controller, GdkEvent *event, NautilusMillerView *self)
+{
+    if (!self->active || !g_settings_get_boolean (nautilus_preferences, NAUTILUS_PREFERENCES_MILLER_TYPE_TO_SELECT))
+    {
+        return FALSE;
+    }
+    MillerColumn *column = find_column (self, self->active_view, NULL);
+    return column != NULL && nautilus_miller_typeahead_handle_event (column->typeahead, event);
+}
+
+static void
+typeahead_preference_changed (GSettings *settings, const char *key, NautilusMillerView *self)
+{
+    for (guint i = 0; i < self->columns->len; i++)
+    {
+        MillerColumn *column = self->columns->pdata[i];
+        nautilus_miller_typeahead_reset (column->typeahead);
+    }
 }
 
 static gboolean
@@ -447,6 +485,7 @@ static void
 column_free (gpointer data)
 {
     MillerColumn *column = data;
+    g_clear_object (&column->typeahead);
     g_clear_handle_id (&column->selection_idle, g_source_remove);
     g_signal_handlers_disconnect_by_data (column->view, column);
     g_signal_handlers_disconnect_by_data (nautilus_files_view_get_private_model (column->view), column);
@@ -536,6 +575,13 @@ column_new (NautilusMillerView *self, GFile *location)
     gtk_box_append (GTK_BOX (column->box), column_heading (column,
         basename != NULL && basename[0] != '\0' ? basename : "/"));
     gtk_box_append (GTK_BOX (column->box), GTK_WIDGET (column->view));
+    GtkWidget *hint = gtk_label_new (NULL);
+    gtk_widget_set_margin_start (hint, 8);
+    gtk_widget_set_margin_end (hint, 8);
+    gtk_widget_add_css_class (hint, "dim-label");
+    gtk_label_set_xalign (GTK_LABEL (hint), 0);
+    gtk_box_append (GTK_BOX (column->box), hint);
+    column->typeahead = nautilus_miller_typeahead_new (column->view, GTK_LABEL (hint));
     gtk_widget_set_vexpand (GTK_WIDGET (column->view), TRUE);
     gtk_accessible_update_property (GTK_ACCESSIBLE (column->view), GTK_ACCESSIBLE_PROPERTY_LABEL,
                                     basename != NULL ? basename : "/", -1);
@@ -549,6 +595,7 @@ column_new (NautilusMillerView *self, GFile *location)
     gtk_widget_add_controller (column->grip, GTK_EVENT_CONTROLLER (drag));
     GtkEventController *focus = gtk_event_controller_focus_new ();
     g_signal_connect (focus, "enter", G_CALLBACK (focus_enter), column);
+    g_signal_connect (focus, "leave", G_CALLBACK (focus_leave), column);
     gtk_widget_add_controller (GTK_WIDGET (column->view), focus);
     GtkGesture *click = gtk_gesture_click_new ();
     gtk_gesture_single_set_button (GTK_GESTURE_SINGLE (click), 0);
@@ -657,6 +704,7 @@ void
 nautilus_miller_view_set_active (NautilusMillerView *self, gboolean active)
 {
     self->active = active;
+    if (!active) { typeahead_preference_changed (nautilus_preferences, NULL, self); }
     if (self->active_view != NULL) { nautilus_files_view_set_action_context (self->active_view, active); }
 }
 
@@ -688,6 +736,7 @@ nautilus_miller_view_dispose (GObject *object)
 {
     NautilusMillerView *self = NAUTILUS_MILLER_VIEW (object);
     cancel_reveal (self);
+    g_signal_handlers_disconnect_by_data (nautilus_preferences, self);
     self->active_view = NULL;
     g_ptr_array_set_size (self->columns, 0);
     g_clear_object (&self->path);
@@ -754,6 +803,12 @@ nautilus_miller_view_init (NautilusMillerView *self)
     self->columns = g_ptr_array_new_with_free_func (column_free);
     self->strip = GTK_BOX (gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 0));
     self->scroller = GTK_SCROLLED_WINDOW (gtk_scrolled_window_new ());
+    GtkEventController *text = gtk_event_controller_legacy_new ();
+    gtk_event_controller_set_propagation_phase (text, GTK_PHASE_CAPTURE);
+    g_signal_connect_object (text, "event", G_CALLBACK (typeahead_event), self, 0);
+    gtk_widget_add_controller (GTK_WIDGET (self), text);
+    g_signal_connect_object (nautilus_preferences, "changed::" NAUTILUS_PREFERENCES_MILLER_TYPE_TO_SELECT,
+                             G_CALLBACK (typeahead_preference_changed), self, 0);
     gtk_scrolled_window_set_policy (self->scroller, GTK_POLICY_AUTOMATIC, GTK_POLICY_NEVER);
     gtk_scrolled_window_set_child (self->scroller, GTK_WIDGET (self->strip));
     GtkEventController *scroll = gtk_event_controller_scroll_new (GTK_EVENT_CONTROLLER_SCROLL_BOTH_AXES);

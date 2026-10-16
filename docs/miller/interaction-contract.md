@@ -32,6 +32,14 @@ Disclosure reveals parent and child together if their complete pair fits the vie
 
 Use 280 px default directory width, 180–1200 px bounds; independent preview width. Persist default and at most 128 per-location width overrides with oldest-use eviction in profile-specific GSettings (XDG settings storage). Reading a remembered location refreshes its recency. Safe identities are local file URIs and SFTP/SMB URIs with a host, no userinfo/query/fragment and at most4096 bytes; other locations use default widths without a saved key. Sanitize unsafe/invalid/duplicate legacy entries on access. Fit measures at most128 evenly spaced already loaded rows; never synchronous directory enumeration. Offer fit, reset, use-as-default and keyboard-operable numeric resize controls with names and current values. Existing live columns retain their current width when another column changes the default; newly created columns use the new default.
 
+## Columns text input
+
+`miller-type-to-select` defaults true and is exposed as **Type to Select in Columns** in General preferences. Only Columns takes ownership of implicit typing; Ctrl+F remains explicit search and disabling the preference restores stock search. Grid/List retain stock behavior. The active listing's GTK IM context owns committed Unicode and preedit. Entries, popovers, dialogs and preview controls retain their own keys. Preedit never selects or activates; Enter/Space during composition cannot fall through to launch/preview. Bare Space outside composition retains external preview.
+
+The bounded prefix is256 Unicode characters and clears after1second of inactivity outside preedit, including cancellation of an older pending match. Backspace removes one grapheme; Escape clears. Comparisons use NFKC and Unicode case folding without changing file identities. The first matching loaded row in current sort order wins. Each idle checks at most256 rows or4ms; no directory enumeration or remote content fetch is added. A plain accessible hint shows prefix/preedit/no-match state. New selection, location, action column, tab, focus departure, settings changes and disposal cancel owned work.
+
+Selection-driven navigation also captures the action generation at the original model change. A later Right/focus navigation invalidates delayed parent notifications before either idle boundary, so the child keeps action ownership.
+
 ## Preview policy
 
 Optional stable right-side inspector, initially hidden, with persisted visibility/width. Follows active actionable selection, not branch endpoint. Folders use nonrecursive metadata; multiple selection reports only known aggregate values. Images use existing isolated image infrastructure; text/source reads have byte and display limits. PDFs use thumbnail/first-page representation and Open; audio/video use poster/metadata and external preview, never autoplay. Unsupported formats show a truthful fallback.

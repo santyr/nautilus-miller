@@ -78,6 +78,11 @@
   </schema>
 
   <schema path="/org/gnome/nautilus/preferences/" id="org.gnome.nautilus.preferences" gettext-domain="nautilus">
+    <key name="miller-type-to-select" type="b">
+      <default>true</default>
+      <summary>Type to select in Columns</summary>
+      <description>Typing selects a matching name in the active directory column. Use the explicit search action to search. Disable to retain type-to-search behavior in Columns.</description>
+    </key>
     <key name="miller-default-column-width" type="u">
       <range min="180" max="1200"/>
       <default>280</default>

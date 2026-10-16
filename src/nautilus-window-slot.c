@@ -656,6 +656,16 @@ nautilus_window_slot_handle_event (NautilusWindowSlot    *self,
         }
     }
 
+    /* Columns owns implicit text input through its ancestor capture controller.
+     * Explicit search remains an ordinary action, and a visible query editor
+     * continues to receive text. Grid/List and the opt-out retain stock search. */
+    if (self->miller_view != NULL &&
+        !nautilus_window_slot_get_search_visible (self) &&
+        g_settings_get_boolean (nautilus_preferences, NAUTILUS_PREFERENCES_MILLER_TYPE_TO_SELECT))
+    {
+        return GDK_EVENT_PROPAGATE;
+    }
+
     /* If the action is not enabled, don't try to handle search */
     if (g_action_get_enabled (action))
     {

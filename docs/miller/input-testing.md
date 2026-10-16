@@ -13,6 +13,15 @@ The test-only C input helper validates canonical owned/private paths, marker mod
 
 Mutter creates virtual input devices lazily. The helper establishes keyboard/pointer capabilities before GTK windows map, so they obtain server keyboard focus. Delivered keys and pointer buttons travel through Mutter and Wayland into GTK; the entry test does not emit GTK controller signals. It verifies `x`, Ctrl+A/Shift input and pointer focus, plus a live mismatched-marker-PID rejection. Nine separate metadata guard cases cover valid metadata, missing marker, marker/runtime modes, display/bus mismatch, host runtime, invalid PID and symlink. Ownership checks are enforced by implementation; these unprivileged fixtures do not fabricate a foreign-UID file.
 
-Without the private harness, genuine-input cases explicitly skip because the environment is absent. Metadata guard tests remain displayless. A skip is not genuine-input acceptance. Current evidence establishes the fixture, not file clipboard/DnD, typeahead, IME composition, accessibility or complete C05/C06/C13. Those require the corresponding Nautilus workflows and filesystem assertions.
+Without the private harness, genuine-input cases explicitly skip because the environment is absent. Metadata guard tests remain displayless. A skip is not genuine-input acceptance. File clipboard/DnD, external IME conversion, accessibility and complete C05/C06/C13 still require their corresponding workflows and filesystem assertions.
+
+The engine and application integration now have genuine key tests:
+
+```sh
+meson compile -C build-miller
+python3 tools/miller/with-test-session.py -- meson test -C build-miller --print-errorlogs test-miller-typeahead-engine test-miller-typeahead-ui
+```
+
+The UI executable uses GTK's simple IM context, including real Ctrl+Shift+U Unicode preedit and Enter commit. It checks selection without activation/focus transfer, native Ctrl+F/Ctrl+L/F2/Enter, opt-out search, rapid selection→Right ownership, tab/focus reset, the live Preferences binding, and unchanged Grid/List type-to-search. This is distinct from external IBus/Anthy conversion acceptance, which is not yet complete. Engine tests separately cover injected preedit/commit lifetimes, incremental matching and expiry; injected signals do not establish real IME conversion.
 
 Development input plan: [input and type-to-select](../superpowers/plans/2026-10-16-miller-input.md). See [acceptance](acceptance.md) for exact run evidence and remaining gates.
