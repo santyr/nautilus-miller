@@ -78,6 +78,17 @@
   </schema>
 
   <schema path="/org/gnome/nautilus/preferences/" id="org.gnome.nautilus.preferences" gettext-domain="nautilus">
+    <key name="miller-default-column-width" type="u">
+      <range min="180" max="1200"/>
+      <default>280</default>
+      <summary>Default directory column width</summary>
+      <description>Width in pixels for Miller directory columns without a remembered width.</description>
+    </key>
+    <key name="miller-column-widths" type="a(su)">
+      <default>[]</default>
+      <summary>Remembered directory column widths</summary>
+      <description>At most 128 safe directory URI and width pairs, ordered by most recent use. Credential-bearing URIs are never remembered.</description>
+    </key>
     <key type="b" name="always-use-location-entry">
       <default>false</default>
       <summary>Always use the location entry, instead of the pathbar</summary>
