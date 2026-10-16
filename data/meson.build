@@ -1,6 +1,6 @@
 icondir = join_paths('icons', 'hicolor', 'scalable', 'apps')
 install_data(
-  join_paths(icondir, 'org.gnome.Nautilus' + profile + '.svg'),
+  join_paths(icondir, 'org.gnome.Nautilus' + (profile == 'Devel' ? 'Devel' : '') + '.svg'),
   install_dir: join_paths(datadir, icondir),
   rename: '@0@.svg'.format(application_id)
 )
@@ -18,6 +18,8 @@ po_dir = join_paths(meson.project_source_root(), 'po')
 desktop_conf = configuration_data()
 
 desktop_conf.set('icon', application_id)
+desktop_conf.set('name', profile == 'Miller' ? 'Nautilus Miller' : 'Files')
+desktop_conf.set('exec', join_paths(prefix, bindir, 'nautilus'))
 
 desktop = i18n.merge_file(
   input: configure_file(
@@ -77,12 +79,14 @@ configure_file(
   install_dir: servicedir
 )
 
-configure_file(
-  input: 'org.freedesktop.FileManager1.service.in',
-  output: 'org.freedesktop.FileManager1.service',
-  configuration: service_conf,
-  install_dir: servicedir
-)
+if profile != 'Miller'
+  configure_file(
+    input: 'org.freedesktop.FileManager1.service.in',
+    output: 'org.freedesktop.FileManager1.service',
+    configuration: service_conf,
+    install_dir: servicedir
+  )
+endif
 
 search_provider_conf = configuration_data()
 
@@ -96,14 +100,17 @@ configure_file(
   output: '@0@.search-provider.ini'.format(application_id)
 )
 
-gnome.compile_schemas(
-  build_by_default: true,
-  depend_files: 'org.gnome.nautilus.gschema.xml'
-)
-
-install_data(
-  'org.gnome.nautilus.gschema.xml',
+schema_xml = configure_file(
+  input: 'org.gnome.nautilus.gschema.xml',
+  output: 'org.gnome.nautilus.gschema.xml',
+  command: [find_program('python3'), files('miller-schemas.py'), '@INPUT@', '@OUTPUT@', schema_prefix, schema_path],
   install_dir: join_paths(datadir, 'glib-2.0', 'schemas')
+)
+custom_target('gsettings-schemas',
+  input: schema_xml,
+  output: 'gschemas.compiled',
+  command: [find_program('glib-compile-schemas'), '--strict', '--targetdir', meson.current_build_dir(), meson.current_build_dir()],
+  build_by_default: true
 )
 
 desktop_file_validate = find_program('desktop-file-validate', required: false)

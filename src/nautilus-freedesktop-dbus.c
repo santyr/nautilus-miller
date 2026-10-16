@@ -19,6 +19,8 @@
  */
 #define G_LOG_DOMAIN "nautilus-dbus"
 
+#include <config.h>
+
 #include "nautilus-freedesktop-dbus.h"
 
 #include "nautilus-application.h"
@@ -231,6 +233,7 @@ nautilus_freedesktop_dbus_register (NautilusFreedesktopDBus  *fdb,
                           G_CALLBACK (skeleton_handle_show_item_properties_cb), fdb);
     }
 
+#if NAUTILUS_OWN_FILEMANAGER1
     fdb->owner_id = g_bus_own_name_on_connection (connection,
                                                   NAUTILUS_FDO_DBUS_NAME,
                                                   G_BUS_NAME_OWNER_FLAGS_NONE,
@@ -238,6 +241,7 @@ nautilus_freedesktop_dbus_register (NautilusFreedesktopDBus  *fdb,
                                                   name_lost_cb,
                                                   fdb,
                                                   NULL);
+#endif
 
     return success;
 }

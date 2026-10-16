@@ -151,7 +151,16 @@ if get_option('profile') == 'Devel'
   name_suffix = ' (Development Snapshot)'
 endif
 
+if profile == 'Miller'
+  app_id_suffix = '.Miller'
+  name_suffix = ' Miller'
+endif
+
 application_id = 'org.gnome.Nautilus' + app_id_suffix
+schema_prefix = profile == 'Miller' ? 'org.gnome.nautilus.miller' : 'org.gnome.nautilus'
+schema_path = profile == 'Miller' ? '/org/gnome/nautilus/miller' : '/org/gnome/nautilus'
+conf.set_quoted('NAUTILUS_SCHEMA_PREFIX', schema_prefix)
+conf.set10('NAUTILUS_OWN_FILEMANAGER1', profile != 'Miller')
 
 if profile == ''
   # Example: 40.0
