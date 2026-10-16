@@ -1,5 +1,6 @@
 tests = {
   'test-miller-view': {'is_parallel': false, 'env': ['GTK_A11Y=test']},
+  'test-miller-state': {'is_parallel': false, 'env': ['GTK_A11Y=test']},
   'test-miller-input': {'is_parallel': false, 'env': ['GTK_A11Y=test']},
   'test-miller-typeahead-engine': {'is_parallel': false, 'env': ['GTK_A11Y=test']},
   'test-miller-typeahead-ui': {'is_parallel': false, 'env': ['GTK_A11Y=test', 'GTK_IM_MODULE=simple']},

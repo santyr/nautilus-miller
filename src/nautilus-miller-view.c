@@ -11,6 +11,7 @@
 #include "nautilus-miller-widths.h"
 #include "nautilus-miller-typeahead.h"
 #include "nautilus-view-item.h"
+#include "nautilus-list-base.h"
 #include <glib/gi18n.h>
 
 typedef struct
@@ -55,12 +56,18 @@ struct _NautilusMillerView
     guint reveal_secondary;
     guint64 scroll_generation;
     guint64 action_generation;
+    GVariant *restore_state;
+    GtkBitset *restore_applied;
+    guint restore_tick, restore_stage;
+    guint64 restore_generation;
+    gboolean restoring, restore_focus;
 };
 G_DEFINE_TYPE (NautilusMillerView, nautilus_miller_view, ADW_TYPE_BIN)
 enum { ACTIVE_VIEW_CHANGED, LOCATION_REQUESTED, LAST_SIGNAL };
 static guint signals[LAST_SIGNAL];
 
 static void reconcile (NautilusMillerView *self, GFile *location, NautilusFileList *selection, gboolean preserve_focus, gboolean reveal);
+static void cancel_restore (NautilusMillerView *self);
 
 static MillerColumn *
 find_column (NautilusMillerView *self, NautilusFilesView *view, guint *position)
@@ -81,6 +88,7 @@ static void
 set_active_view (NautilusMillerView *self, NautilusFilesView *view)
 {
     if (self->active_view == view) { return; }
+    if (!self->restoring) { cancel_restore (self); }
     self->action_generation++;
     if (self->active_view != NULL)
     {
@@ -106,6 +114,19 @@ cancel_reveal (NautilusMillerView *self)
         gtk_widget_remove_tick_callback (GTK_WIDGET (self), self->scroll_tick);
         self->scroll_tick = 0;
     }
+}
+
+static void
+cancel_restore (NautilusMillerView *self)
+{
+    self->restore_generation++;
+    if (self->restore_tick != 0)
+    {
+        gtk_widget_remove_tick_callback (GTK_WIDGET (self), self->restore_tick);
+        self->restore_tick = 0;
+    }
+    g_clear_pointer (&self->restore_state, g_variant_unref);
+    g_clear_pointer (&self->restore_applied, gtk_bitset_unref);
 }
 
 static gboolean
@@ -162,6 +183,7 @@ schedule_reveal (NautilusMillerView *self, guint primary, guint secondary)
 static void
 manual_scroll_pressed (GtkGestureClick *gesture, int presses, double x, double y, NautilusMillerView *self)
 {
+    cancel_restore (self);
     self->scroll_generation++;
     cancel_reveal (self);
 }
@@ -169,6 +191,7 @@ manual_scroll_pressed (GtkGestureClick *gesture, int presses, double x, double y
 static gboolean
 manual_scroll (GtkEventControllerScroll *controller, double x, double y, NautilusMillerView *self)
 {
+    cancel_restore (self);
     self->scroll_generation++;
     cancel_reveal (self);
     return FALSE;
@@ -178,6 +201,7 @@ static void
 request_location (NautilusMillerView *self, GFile *location, gboolean preserve_focus, gboolean reveal)
 {
     g_autoptr (GFile) target = g_object_ref (location);
+    cancel_restore (self);
     g_set_object (&self->user_location, target);
     reconcile (self, target, NULL, preserve_focus, reveal);
     g_signal_emit (self, signals[LOCATION_REQUESTED], 0, target);
@@ -217,6 +241,7 @@ selection_model_changed (GtkSelectionModel *model, guint position, guint count, 
      * between either pair of callbacks invalidates only the older reveal. */
     if (!column->owner->reconciling && !nautilus_files_view_is_selection_auto (column->view))
     {
+        if (!column->owner->restoring) { cancel_restore (column->owner); }
         column->selection_scroll_generation = column->owner->scroll_generation;
         column->selection_action_generation = column->owner->action_generation;
     }
@@ -677,6 +702,7 @@ reconcile (NautilusMillerView *self, GFile *location, NautilusFileList *selectio
 void
 nautilus_miller_view_set_location (NautilusMillerView *self, GFile *location, NautilusFileList *selection)
 {
+    cancel_restore (self);
     gboolean preserve = self->user_location != NULL && g_file_equal (self->user_location, location);
     g_clear_object (&self->user_location);
     reconcile (self, location, selection, preserve, TRUE);
@@ -687,6 +713,170 @@ GFile *nautilus_miller_view_get_location (NautilusMillerView *self)
 {
     guint count = nautilus_miller_path_get_n_columns (self->path);
     return count > 0 ? nautilus_miller_path_get_column (self->path, count - 1) : NULL;
+}
+
+static GtkAdjustment *
+column_vertical (MillerColumn *column)
+{
+    return gtk_scrolled_window_get_vadjustment (GTK_SCROLLED_WINDOW (
+        nautilus_list_base_get_scrolled_window (nautilus_files_view_get_private_list_base (column->view))));
+}
+
+GVariant *
+nautilus_miller_view_capture_state (NautilusMillerView *self, gboolean leaving_branch)
+{
+    GFile *endpoint = nautilus_miller_view_get_location (self);
+    if (endpoint == NULL) { return NULL; }
+    GVariantBuilder columns;
+    g_variant_builder_init (&columns, G_VARIANT_TYPE ("a(sasd)"));
+    for (guint i = 0; i < self->columns->len; i++)
+    {
+        MillerColumn *column = self->columns->pdata[i];
+        GVariantBuilder selected;
+        g_variant_builder_init (&selected, G_VARIANT_TYPE ("as"));
+        g_autolist (NautilusFile) files = leaving_branch && column->branch_file != NULL ?
+            g_list_append (NULL, g_object_ref (column->branch_file)) : nautilus_files_view_get_selection (column->view);
+        for (GList *l = files; l != NULL; l = l->next)
+        {
+            g_autoptr (GFile) location = nautilus_file_get_location (l->data);
+            g_autoptr (GFile) parent = g_file_get_parent (location);
+            if (parent != NULL && g_file_equal (parent, column->location))
+            {
+                g_autofree char *uri = g_file_get_uri (location);
+                g_variant_builder_add (&selected, "s", uri);
+            }
+        }
+        g_autofree char *uri = g_file_get_uri (column->location);
+        g_variant_builder_add (&columns, "(s@asd)", uri, g_variant_builder_end (&selected),
+                               gtk_adjustment_get_value (column_vertical (column)));
+    }
+    MillerColumn *active = find_column (self, self->active_view, NULL);
+    g_autofree char *endpoint_uri = g_file_get_uri (endpoint);
+    g_autofree char *active_uri = g_file_get_uri (active != NULL ? active->location : endpoint);
+    return g_variant_ref_sink (g_variant_new ("(ssd@a(sasd))", endpoint_uri, active_uri,
+        gtk_adjustment_get_value (gtk_scrolled_window_get_hadjustment (self->scroller)), g_variant_builder_end (&columns)));
+}
+
+static MillerColumn *
+column_at_location (NautilusMillerView *self, const char *uri, guint *index)
+{
+    g_autoptr (GFile) location = g_file_new_for_uri (uri);
+    for (guint i = 0; i < self->columns->len; i++)
+    {
+        MillerColumn *column = self->columns->pdata[i];
+        if (g_file_equal (column->location, location))
+        {
+            if (index != NULL) { *index = i; }
+            return column;
+        }
+    }
+    return NULL;
+}
+
+static gboolean
+restore_columns (GtkWidget *widget, GdkFrameClock *clock, gpointer data)
+{
+    g_autoptr (NautilusMillerView) self = g_object_ref (data);
+    g_autoptr (GVariant) state = g_variant_ref (self->restore_state);
+    guint64 generation = self->restore_generation;
+    const char *endpoint, *active;
+    double horizontal;
+    g_autoptr (GVariant) columns = NULL;
+    g_variant_get (state, "(&s&sd@a(sasd))", &endpoint, &active, &horizontal, &columns);
+    gboolean ready = TRUE;
+    self->restoring = TRUE;
+    for (guint i = 0; i < g_variant_n_children (columns); i++)
+    {
+        g_autoptr (GVariant) record = g_variant_get_child_value (columns, i);
+        g_autoptr (GVariant) selected = NULL;
+        const char *uri;
+        double vertical;
+        g_variant_get (record, "(&s@asd)", &uri, &selected, &vertical);
+        guint position;
+        MillerColumn *column = column_at_location (self, uri, &position);
+        if (column == NULL) { continue; }
+        if (nautilus_files_view_get_loading (column->view)) { ready = FALSE; continue; }
+        if (!gtk_bitset_contains (self->restore_applied, position))
+        {
+            g_autoptr (NautilusFilesView) view = g_object_ref (column->view);
+            g_autolist (NautilusFile) files = NULL;
+            GVariantIter iter;
+            const char *file_uri;
+            g_variant_iter_init (&iter, selected);
+            while (g_variant_iter_next (&iter, "&s", &file_uri))
+            {
+                g_autoptr (GFile) file = g_file_new_for_uri (file_uri);
+                g_autoptr (GFile) parent = g_file_get_parent (file);
+                if (parent != NULL && g_file_equal (parent, column->location))
+                {
+                    files = g_list_prepend (files, nautilus_file_get (file));
+                }
+            }
+            nautilus_files_view_set_selection (view, files, TRUE);
+            if (generation != self->restore_generation) { self->restoring = FALSE; return G_SOURCE_REMOVE; }
+            gtk_bitset_add (self->restore_applied, position);
+        }
+    }
+    if (ready && self->restore_stage == 0)
+    {
+        MillerColumn *column = column_at_location (self, active, NULL);
+        if (column != NULL)
+        {
+            g_autoptr (NautilusFilesView) view = g_object_ref (column->view);
+            set_active_view (self, view);
+            if (self->restore_focus && self->active) { gtk_widget_grab_focus (GTK_WIDGET (view)); }
+            if (generation != self->restore_generation) { self->restoring = FALSE; return G_SOURCE_REMOVE; }
+        }
+        self->restore_stage = 1;
+    }
+    else if (ready && self->restore_stage++ >= 3)
+    {
+        for (guint i = 0; i < g_variant_n_children (columns); i++)
+        {
+            g_autoptr (GVariant) record = g_variant_get_child_value (columns, i);
+            g_autoptr (GVariant) selected = NULL;
+            const char *uri;
+            double vertical;
+            g_variant_get (record, "(&s@asd)", &uri, &selected, &vertical);
+            MillerColumn *column = column_at_location (self, uri, NULL);
+            if (column != NULL) { gtk_adjustment_set_value (column_vertical (column), vertical); }
+        }
+        gtk_adjustment_set_value (gtk_scrolled_window_get_hadjustment (self->scroller), horizontal);
+        self->restoring = FALSE;
+        self->restore_tick = 0;
+        cancel_restore (self);
+        return G_SOURCE_REMOVE;
+    }
+    self->restoring = FALSE;
+    return G_SOURCE_CONTINUE;
+}
+
+void
+nautilus_miller_view_restore_state (NautilusMillerView *self, GVariant *state, gboolean restore_focus)
+{
+    g_return_if_fail (g_variant_is_of_type (state, G_VARIANT_TYPE ("(ssda(sasd))")));
+    g_autoptr (NautilusMillerView) hold = g_object_ref (self);
+    /* A caller may be handing back our currently pending immutable value. */
+    g_autoptr (GVariant) retained = g_variant_ref (state);
+    cancel_restore (self);
+    guint64 generation = self->restore_generation;
+    cancel_reveal (self);
+    g_clear_object (&self->user_location);
+    typeahead_preference_changed (nautilus_preferences, NULL, self);
+    const char *uri;
+    g_variant_get_child (retained, 0, "&s", &uri);
+    g_autoptr (GFile) endpoint = g_file_new_for_uri (uri);
+    self->restoring = TRUE;
+    reconcile (self, endpoint, NULL, FALSE, FALSE);
+    self->restoring = FALSE;
+    /* Binding the active view emits callbacks. A newer navigation from one
+     * of them must not acquire the old pending restoration afterward. */
+    if (generation != self->restore_generation) { return; }
+    self->restore_state = g_variant_ref (retained);
+    self->restore_applied = gtk_bitset_new_empty ();
+    self->restore_stage = 0;
+    self->restore_focus = restore_focus;
+    self->restore_tick = gtk_widget_add_tick_callback (GTK_WIDGET (self), restore_columns, self, NULL);
 }
 
 gboolean
@@ -736,6 +926,7 @@ nautilus_miller_view_dispose (GObject *object)
 {
     NautilusMillerView *self = NAUTILUS_MILLER_VIEW (object);
     cancel_reveal (self);
+    cancel_restore (self);
     g_signal_handlers_disconnect_by_data (nautilus_preferences, self);
     self->active_view = NULL;
     g_ptr_array_set_size (self->columns, 0);

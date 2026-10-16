@@ -29,7 +29,7 @@
 
 ### Task 1: Immutable strip snapshots and cancellable restoration
 
-**Files:** `src/nautilus-miller-view.[ch]`; new `test/automated/display/test-miller-state.c`; display test Meson registration.
+**Files:** `src/nautilus-miller-view.[ch]`, ListBase internal headers; new `test/automated/display/test-miller-state.c`; display test Meson registration. Promote the existing `nautilus_list_base_get_scrolled_window()` declaration from subclass-private to internal public header so coordination can obtain GTK adjustments without fragile widget-tree searches; its implementation is unchanged.
 
 **Interfaces:** `GVariant *nautilus_miller_view_capture_state(NautilusMillerView *self, gboolean leaving_branch)` returns a full reference of type `(ssda(sasd))`: endpoint URI, active-directory URI, horizontal adjustment, array of (directory URI, selected-file URI array, vertical adjustment). When leaving an old displayed branch after its parent selected a different file/folder, capture the old route's branch marker for that ancestor, so Back restores a coherent old branch. Ordinary endpoint selections are copied unchanged. `void nautilus_miller_view_restore_state(self, GVariant *state, gboolean restore_focus)` reconstructs the endpoint without emitting navigation/history and restores only selections belonging to the corresponding column. Caller retains its value; strip holds an owned reference while restoration is pending.
 

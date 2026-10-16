@@ -13,4 +13,8 @@ gboolean nautilus_miller_view_get_loading (NautilusMillerView *self);
 void nautilus_miller_view_set_active (NautilusMillerView *self, gboolean active);
 void nautilus_miller_view_stop_loading (NautilusMillerView *self);
 void nautilus_miller_view_reload (NautilusMillerView *self);
+/* Immutable in-memory (endpoint, active directory, horizontal scroll,
+ * [(directory, selected URI array, vertical scroll)]), type (ssda(sasd)). */
+GVariant *nautilus_miller_view_capture_state (NautilusMillerView *self, gboolean leaving_branch);
+void nautilus_miller_view_restore_state (NautilusMillerView *self, GVariant *state, gboolean restore_focus);
 G_END_DECLS
