@@ -91,8 +91,11 @@ def verify_process(pid, address):
 
 
 class BackendProcess:
-    def __init__(self, pid, address, fd):
+    def __init__(self, pid, address, fd, pause_seconds=5):
         self.pid, self.address, self.fd = pid, address, fd
+        if type(pause_seconds) is not int or not 1 <= pause_seconds <= 10:
+            raise ValueError('Private pause limit must be an integer from 1 to 10 seconds')
+        self.pause_seconds = pause_seconds
         self.lock = threading.Lock()
         self.timer = None
         self.timed_out = False
@@ -115,7 +118,7 @@ class BackendProcess:
             if self.timer is not None:
                 raise RuntimeError('Owned archive backend is already paused')
             signal.pidfd_send_signal(self.fd, signal.SIGSTOP)
-            self.timer = threading.Timer(5, self._expire)
+            self.timer = threading.Timer(self.pause_seconds, self._expire)
             self.timer.daemon = True
             self.timer.start()
         deadline = time.monotonic() + 2
@@ -147,7 +150,7 @@ class BackendProcess:
                     self.fd = None
 
 
-def open_verified_backend(pid, address):
+def open_verified_backend(pid, address, pause_seconds=5):
     _, _, actual = private_session()
     if address != actual:
         raise RuntimeError('Archive backend bus differs')
@@ -157,15 +160,18 @@ def open_verified_backend(pid, address):
         raise RuntimeError('Archive backend process is unavailable') from error
     try:
         verify_process(pid, address)
-        return BackendProcess(pid, address, fd)
+        return BackendProcess(pid, address, fd, pause_seconds)
     except BaseException:
         os.close(fd)
         raise
 
 
 class BackendFixture:
-    def __init__(self):
+    def __init__(self, pause_seconds=5):
         self.process = self.directory = self.uri = None
+        if type(pause_seconds) is not int or not 1 <= pause_seconds <= 10:
+            raise ValueError('Private pause limit must be an integer from 1 to 10 seconds')
+        self.pause_seconds = pause_seconds
 
     def __enter__(self):
         root, self.runtime, address = private_session()
@@ -216,7 +222,7 @@ class BackendFixture:
                     continue
             if len(candidates) != 1:
                 raise RuntimeError('Could not identify exactly one private archive backend')
-            self.process = open_verified_backend(candidates[0], address)
+            self.process = open_verified_backend(candidates[0], address, self.pause_seconds)
             return self
         except BaseException:
             self.close()
@@ -250,7 +256,8 @@ class BackendFixture:
         server.listen(1)
         server.settimeout(.1)
         config = configparser.ConfigParser(interpolation=None)
-        config['backend'] = {'root-uri': self.uri, 'control': str(control), 'pid': str(self.process.pid)}
+        config['backend'] = {'root-uri': self.uri, 'control': str(control), 'pid': str(self.process.pid),
+                             'pause-seconds': str(self.pause_seconds)}
         with os.fdopen(os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), 'w') as output:
             config.write(output)
 
@@ -307,6 +314,8 @@ class BackendFixture:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--pause-seconds', type=int, choices=range(1, 11), default=5,
+                        help='failing watchdog limit (default: 5; maximum: 10 seconds)')
     parser.add_argument('command', nargs=argparse.REMAINDER)
     args = parser.parse_args()
     command = args.command[1:] if args.command[:1] == ['--'] else args.command
@@ -315,7 +324,7 @@ def main():
     def terminate(signum, frame):
         raise SystemExit(128 + signum)
     signal.signal(signal.SIGTERM, terminate)
-    with BackendFixture() as fixture:
+    with BackendFixture(args.pause_seconds) as fixture:
         return fixture.run(command)
 
 

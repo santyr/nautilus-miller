@@ -29,6 +29,38 @@ class DelayedBackend(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('owned private session', result.stderr)
 
+    def test_pause_limit_is_bounded_before_mount(self):
+        for value in ['0', '11', 'not-a-number']:
+            result = subprocess.run([sys.executable, str(BACKEND), '--pause-seconds', value,
+                '--', 'true'], capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertIn('--pause-seconds:', result.stderr)
+            self.assertNotIn('unrecognized arguments', result.stderr)
+
+    def test_longer_pause_can_test_an_application_deadline(self):
+        child = '''import configparser,os,pathlib,socket,subprocess,time
+config=configparser.ConfigParser(interpolation=None);config.read(os.environ['MILLER_TEST_BACKEND'])
+state=config['backend'];assert state['pause-seconds']=='8'
+def control(command):
+    with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as connection:
+        connection.settimeout(3);connection.connect(state['control']);connection.sendall(command+b'\\n')
+        assert connection.recv(100)==b'ok\\n'
+control(b'pause')
+try:
+    time.sleep(5.7)
+    assert 'T (stopped)' in pathlib.Path('/proc',state['pid'],'status').read_text()
+finally:
+    control(b'resume')
+result=subprocess.run(['gio','list',state['root-uri']+'A/'],capture_output=True,text=True,timeout=3)
+assert result.returncode==0 and result.stdout.strip()=='a.txt',result.stderr
+'''
+        code = f'''import subprocess,sys
+result=subprocess.run([sys.executable,sys.argv[1],'--pause-seconds','8','--',sys.executable,'-c',{child!r}],capture_output=True,text=True,timeout=20)
+assert result.returncode==0,result.stderr
+'''
+        result = self.private(code)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_refuse_forged_session_before_mount(self):
         code = IMPORT + '''import configparser,os,pathlib,subprocess
 marker=pathlib.Path(os.environ['MILLER_TEST_SESSION'])

@@ -29,13 +29,13 @@
 
 ### Task 1: Inspector metadata and bounded text
 
-**Files:** create `src/nautilus-miller-preview.[ch]`, `test/automated/display/test-miller-preview.c`; modify source/display Meson registration. Use a focused UI resource only if needed; follow existing resource generation.
+**Files:** create `src/nautilus-miller-preview.[ch]`, `test/automated/display/test-miller-preview.c`; modify source/display Meson registration, `tools/miller/with-delayed-backend.py` and its Python guards; create `test/miller/test-preview-io.py` for actual read/protocol observations. Use a focused UI resource only if needed; follow existing resource generation.
 
 **Interfaces:** `GtkWidget *nautilus_miller_preview_new(void)` returns an internal `AdwBin` subclass. `void nautilus_miller_preview_set_selection(NautilusMillerPreview *self, NautilusFileList *files)` copies the selection. `void nautilus_miller_preview_set_active(NautilusMillerPreview *self, gboolean active)` gates content work. Read-only GObject `loading` property reports owned request state; presentation remains ordinary accessible GTK widgets. No test-only production injection API.
 
-- [ ] Add fixture cases `empty`, `folder`, `multiple-known-partial`, `text-bounds`, `invalid-binary`, `special-file`, `newer-selection`, `hide-dispose`, `entry-focus`. Assert visible content/type/known-size wording,128KiB/32KiB bounds and truncation, no directory enumeration/activation, actual weak destruction and unchanged root focus. Add a controlled local replacement race using owned fixtures; a FIFO must never block the UI. Run missing-widget API test first. Expected: compile RED.
-- [ ] Implement metadata and text requests with generation/cancellable/deadline ownership. Native opening uses `O_NONBLOCK|O_NOFOLLOW|O_CLOEXEC` and `fstat` before bounded regular-file reads; keep it off the GTK main loop. Remote content remains disabled until Task3 policy tests. Escape invalid filename/text safely and display literal text. Expected: focused cases GREEN.
-- [ ] Run full build, profile validator, private-session Meson and maintained Python guard/deployment suites. Expected: all pass, external skips explicit. Update acceptance with RED/GREEN evidence and commit the standalone widget; no product pane claim yet.
+- [x] Add fixture cases `empty`, `folder`, `multiple-known-partial`, `text-bounds`, `invalid-binary`, `special-file`, `newer-selection`, `hide-dispose`, `entry-focus`. Assert visible content/type/known-size wording,128KiB/32KiB bounds and truncation, no directory enumeration/activation, actual weak destruction and unchanged root focus. Add a controlled local replacement race using owned fixtures; a FIFO must never block the UI. Run missing-widget API test first. Expected: compile RED.
+- [x] Implement metadata and text requests with generation/cancellable/deadline ownership. Native opening uses `O_NONBLOCK|O_NOFOLLOW|O_CLOEXEC` and `fstat` before bounded regular-file reads; keep it off the GTK main loop. Remote content remains disabled until Task3 policy tests. Escape invalid filename/text safely and display literal text. Expected: focused cases GREEN.
+- [x] Run full build, profile validator, private-session Meson and maintained Python guard/deployment suites. Expected: all pass, external skips explicit. Update acceptance with RED/GREEN evidence and commit the standalone widget; no product pane claim yet.
 
 ### Task 2: Active selection, inspector controls and persistence
 
