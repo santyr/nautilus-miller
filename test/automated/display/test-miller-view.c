@@ -185,6 +185,11 @@ test_keyboard_and_focus (void)
     g_autofree char *actual_child = g_file_get_uri (nautilus_files_view_get_location (child_view));
     g_autofree char *expected_child = g_file_get_uri (child);
     g_assert_cmpstr (actual_child, ==, expected_child);
+    /* Metadata/model updates may rebroadcast an unchanged parent selection.
+     * They must not make that parent the action owner after entering a child. */
+    g_signal_emit_by_name (parent, "selection-changed");
+    settle (strip);
+    g_assert_true (nautilus_miller_view_get_active_view (strip) == child_view);
     g_assert_true (send_arrow (child_view, GDK_KEY_Left));
     g_assert_true (nautilus_miller_view_get_active_view (strip) == parent);
     GtkWidget *column_box = gtk_widget_get_parent (GTK_WIDGET (parent));
@@ -411,12 +416,26 @@ test_automatic_selection_revealed (void)
     /* This is the endpoint-selection path used by FileManager1 ShowItems. */
     nautilus_miller_view_set_location (strip, root, &selection);
     settle (strip);
+    wait_frame (window);
     gint64 deadline = g_get_monotonic_time () + 5 * G_TIME_SPAN_SECOND;
     while (gtk_adjustment_get_value (adjustment) == 0 && g_get_monotonic_time () < deadline)
     {
         g_main_context_iteration (NULL, FALSE);
         g_usleep (1000);
     }
+    g_autolist (NautilusFile) actual_selection = nautilus_files_view_get_selection (view);
+    g_autoptr (GtkBitset) selected_positions = gtk_selection_model_get_selection (
+        GTK_SELECTION_MODEL (nautilus_files_view_get_private_model (view)));
+    g_test_message ("Selected model position: %u", gtk_bitset_get_minimum (selected_positions));
+    g_assert_nonnull (actual_selection);
+    g_autoptr (GFile) actual_file = nautilus_file_get_location (actual_selection->data);
+    g_assert_true (g_file_equal (actual_file, target));
+    g_test_message ("Reveal model=%u selection=%u loading=%d list=%dx%d value=%.0f upper=%.0f page=%.0f",
+        g_list_model_get_n_items (G_LIST_MODEL (nautilus_files_view_get_private_model (view))),
+        g_list_length (actual_selection), nautilus_files_view_get_loading (view),
+        gtk_widget_get_width (list), gtk_widget_get_height (list),
+        gtk_adjustment_get_value (adjustment), gtk_adjustment_get_upper (adjustment),
+        gtk_adjustment_get_page_size (adjustment));
     g_assert_cmpfloat (gtk_adjustment_get_value (adjustment), >, 0);
     GtkWidget *focused = gtk_root_get_focus (GTK_ROOT (window));
     g_assert_true (focused == entry || gtk_widget_is_ancestor (focused, entry));
@@ -440,6 +459,7 @@ test_full_window_operations (void)
     g_autoptr (NautilusWindowSlot) slot = NULL;
     g_object_get (window, "active-slot", &slot, NULL);
     settle_slot (slot);
+    wait_frame (GTK_WIDGET (window));
     g_autoptr (GPtrArray) columns = g_ptr_array_new ();
     collect_views (GTK_WIDGET (slot), columns);
     NautilusFilesView *parent = NULL;

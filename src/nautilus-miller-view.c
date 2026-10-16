@@ -15,6 +15,7 @@ typedef struct
     NautilusFilesView *view;
     GFile *location;
     NautilusFile *branch_file;
+    NautilusFileList *observed_selection;
     GtkWidget *box;
     GtkWidget *grip;
     guint selection_idle;
@@ -127,7 +128,26 @@ selection_idle (gpointer data)
 static void
 selection_changed (NautilusFilesView *view, MillerColumn *column)
 {
-    if (column->owner->reconciling || nautilus_files_view_is_selection_auto (view)) { return; }
+    g_autolist (NautilusFile) selection = nautilus_files_view_get_selection (view);
+    gboolean same = g_list_length (selection) == g_list_length (column->observed_selection);
+    if (same && selection != NULL)
+    {
+        g_autoptr (GHashTable) previous = g_hash_table_new (g_direct_hash, g_direct_equal);
+        for (GList *item = column->observed_selection; item != NULL; item = item->next)
+        {
+            g_hash_table_add (previous, item->data);
+        }
+        for (GList *item = selection; same && item != NULL; item = item->next)
+        {
+            same = g_hash_table_contains (previous, item->data);
+        }
+    }
+    nautilus_file_list_free (column->observed_selection);
+    column->observed_selection = g_steal_pointer (&selection);
+    /* FilesView coalesces selection notifications and also sends them after
+     * model updates. An unchanged ancestor selection is not new navigation
+     * and must not reclaim action ownership from a child we just entered. */
+    if (same || column->owner->reconciling || nautilus_files_view_is_selection_auto (view)) { return; }
     if (column->selection_idle == 0)
     {
         column->selection_idle = g_idle_add (selection_idle, column);
@@ -211,6 +231,7 @@ column_free (gpointer data)
     g_object_unref (column->view);
     g_object_unref (column->location);
     g_clear_object (&column->branch_file);
+    nautilus_file_list_free (column->observed_selection);
     g_free (column);
 }
 
