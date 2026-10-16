@@ -6,12 +6,13 @@ Nautilus Miller is **Sat’s personal project**, an independently maintained for
 - [Current completion scope](docs/miller/finder-completion-goal.md)
 - [Feature and acceptance status](docs/miller/acceptance.md)
 - [Extension compatibility](docs/miller/extension-compatibility.md)
+- [Contributing to this personal project](CONTRIBUTING.md)
 
 ## Support, bug reports and feature requests
 
 Use the [Nautilus Miller GitHub issue tracker](https://github.com/santyr/nautilus-miller/issues) for questions, bugs and feature requests about this fork. Include the fork revision or RPM version, Fedora/GNOME versions, reproduction steps and relevant logs with private information removed. Development and support are provided on a personal, best-effort basis.
 
-Please keep reports about Miller columns and other fork changes in this repository. GNOME’s issue tracker, Discourse and design channels are not support channels for this project. Any upstream report should concern a problem independently reproduced in unmodified upstream Nautilus.
+Please keep reports about this fork in this repository. GNOME’s issue tracker, Discourse and design channels are not support channels for this project.
 
 ## Runtime dependencies
 
