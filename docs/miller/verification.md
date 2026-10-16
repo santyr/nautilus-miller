@@ -25,7 +25,7 @@ Deferred minor: in Grid mode the toolbar toggle still advertises List View while
 
 The canonical Fedora replacement RPM and matching extension, development, debug, and source RPMs built successfully. Package metadata and file lists retain `/usr/bin/nautilus`, the canonical desktop entry, both Nautilus and FileManager1 D-Bus services, and the canonical schema, and add `/usr/bin/nautilus-miller`.
 
-An unprivileged `dnf install --assumeno` resolved an upgrade of exactly Nautilus and nautilus-extensions from `50.4-1.fc44` to `50.4-1.miller1.fc44`. It also reported that installation would invalidate an existing offline transaction initiated by `dnf5daemon-server`. No package installation has been performed. Sudo requires the user's local password.
+An unprivileged `dnf install --assumeno` resolved an upgrade of exactly Nautilus and nautilus-extensions from `50.4-1.fc44` to `50.4-1.miller1.fc44`. It also reported that installation would invalidate an existing offline transaction initiated by `dnf5daemon-server`. The user explicitly chose to install the fork now and clear that queued transaction. No package installation has been performed. Sudo requires the user's local password.
 
 ## Execution decisions
 

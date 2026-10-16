@@ -1,4 +1,10 @@
-# nautilus
+# Nautilus Miller
+
+This fork adds Finder-style Miller columns alongside Grid and List. See the
+[Miller build, install, and rollback guide](README.miller.md) and the
+[host verification record](docs/miller/verification.md).
+
+## Upstream Nautilus
 [![Pipeline status](https://gitlab.gnome.org/GNOME/nautilus/badges/main/pipeline.svg)](https://gitlab.gnome.org/GNOME/nautilus/commits/main)
 [![coverage report](https://gitlab.gnome.org/GNOME/nautilus/badges/main/coverage.svg)](https://gitlab.gnome.org/GNOME/nautilus/commits/main) 
 
