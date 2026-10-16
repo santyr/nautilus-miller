@@ -78,6 +78,22 @@
   </schema>
 
   <schema path="/org/gnome/nautilus/preferences/" id="org.gnome.nautilus.preferences" gettext-domain="nautilus">
+    <key name="miller-preview-visible" type="b">
+      <default>false</default>
+      <summary>Show the Columns inspector</summary>
+      <description>Show a separate inspector following the active column selection.</description>
+    </key>
+    <key name="miller-preview-width" type="u">
+      <range min="240" max="800"/>
+      <default>320</default>
+      <summary>Columns inspector width</summary>
+      <description>Inspector width in logical pixels, independent of directory widths.</description>
+    </key>
+    <key name="miller-preview-remote" type="b">
+      <default>false</default>
+      <summary>Allow remote content inspection</summary>
+      <description>Allow bounded remote content previews when inherited privacy preferences also permit them.</description>
+    </key>
     <key name="miller-type-to-select" type="b">
       <default>true</default>
       <summary>Type to select in Columns</summary>

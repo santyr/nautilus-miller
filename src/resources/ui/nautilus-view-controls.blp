@@ -41,6 +41,15 @@ menu view_menu {
 
   section {
     item {
+      label: _("Show _Preview");
+      action: "slot.miller-preview";
+      accel: "<control><shift>p";
+      hidden-when: "action-disabled";
+    }
+  }
+
+  section {
+    item {
       label: _("Captions…");
       action: "view.visible-captions";
       hidden-when: "action-disabled";

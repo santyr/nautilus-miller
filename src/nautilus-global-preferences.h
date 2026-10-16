@@ -29,6 +29,9 @@ G_BEGIN_DECLS
 
 /* Display  */
 #define NAUTILUS_PREFERENCES_SHOW_HIDDEN_FILES			"show-hidden"
+#define NAUTILUS_PREFERENCES_MILLER_PREVIEW_VISIBLE "miller-preview-visible"
+#define NAUTILUS_PREFERENCES_MILLER_PREVIEW_WIDTH "miller-preview-width"
+#define NAUTILUS_PREFERENCES_MILLER_PREVIEW_REMOTE "miller-preview-remote"
 #define NAUTILUS_PREFERENCES_MILLER_TYPE_TO_SELECT "miller-type-to-select"
 
 /* Mouse */

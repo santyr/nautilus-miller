@@ -10,6 +10,7 @@
 #include "nautilus-global-preferences.h"
 #include "nautilus-miller-widths.h"
 #include "nautilus-miller-typeahead.h"
+#include "nautilus-miller-preview.h"
 #include "nautilus-view-item.h"
 #include "nautilus-list-base.h"
 #include <glib/gi18n.h>
@@ -45,6 +46,11 @@ struct _NautilusMillerView
     NautilusMillerPath *path;
     GtkScrolledWindow *scroller;
     GtkBox *strip;
+    GtkPaned *paned;
+    GtkWidget *preview_box;
+    NautilusMillerPreview *preview;
+    GtkSpinButton *preview_width;
+    gboolean preview_resizing;
     GPtrArray *columns;
     NautilusFilesView *active_view; /* borrowed from columns */
     GFile *user_location;
@@ -85,6 +91,167 @@ find_column (NautilusMillerView *self, NautilusFilesView *view, guint *position)
 }
 
 static void
+update_preview (NautilusMillerView *self)
+{
+    g_autolist (NautilusFile) selection = self->active_view != NULL ?
+        nautilus_files_view_get_selection (self->active_view) : NULL;
+    nautilus_miller_preview_set_selection (self->preview, selection);
+}
+
+static GtkWidget *
+preview_handle (NautilusMillerView *self)
+{
+    for (GtkWidget *child = gtk_widget_get_first_child (GTK_WIDGET (self->paned)); child;
+         child = gtk_widget_get_next_sibling (child))
+    {
+        if (child != GTK_WIDGET (self->scroller) && child != self->preview_box) { return child; }
+    }
+    return NULL;
+}
+
+static int
+preview_handle_width (NautilusMillerView *self)
+{
+    GtkWidget *handle = preview_handle (self);
+    int width = 0;
+    if (handle != NULL) { gtk_widget_measure (handle, GTK_ORIENTATION_HORIZONTAL, -1, NULL, &width, NULL, NULL); }
+    return width;
+}
+
+static void
+preview_preferences_changed (GSettings *settings, const char *key, NautilusMillerView *self)
+{
+    gboolean visible = g_settings_get_boolean (settings, NAUTILUS_PREFERENCES_MILLER_PREVIEW_VISIBLE);
+    GtkRoot *root = gtk_widget_get_root (GTK_WIDGET (self));
+    GtkWidget *focus = root != NULL ? gtk_root_get_focus (root) : NULL;
+    if (!visible && self->active && focus != NULL &&
+        (focus == self->preview_box || gtk_widget_is_ancestor (focus, self->preview_box)) && self->active_view != NULL)
+    {
+        gtk_widget_grab_focus (GTK_WIDGET (self->active_view));
+    }
+    nautilus_miller_preview_set_active (self->preview, self->active && visible);
+    gtk_widget_set_visible (self->preview_box, visible);
+    guint width = g_settings_get_uint (settings, NAUTILUS_PREFERENCES_MILLER_PREVIEW_WIDTH);
+    gtk_spin_button_set_value (self->preview_width, width);
+    gtk_widget_set_size_request (self->preview_box, width, -1);
+    if (visible && gtk_widget_get_width (GTK_WIDGET (self->paned)) > 0)
+    {
+        int total = gtk_widget_get_width (GTK_WIDGET (self->paned));
+        int gap = preview_handle_width (self);
+        gtk_paned_set_position (self->paned, MAX (0, total - (int) width - gap));
+    }
+}
+
+static void
+preview_width_changed (GtkSpinButton *spin, NautilusMillerView *self)
+{
+    guint width = gtk_spin_button_get_value_as_int (spin);
+    if (g_settings_get_uint (nautilus_preferences, NAUTILUS_PREFERENCES_MILLER_PREVIEW_WIDTH) != width)
+    {
+        g_settings_set_uint (nautilus_preferences, NAUTILUS_PREFERENCES_MILLER_PREVIEW_WIDTH, width);
+    }
+}
+
+/* Observe the native paned interaction without adding a competing drag
+ * recognizer or claiming its event sequence. */
+static gboolean
+preview_resize_event (GtkEventControllerLegacy *controller, GdkEvent *event, NautilusMillerView *self)
+{
+    GdkEventType type = gdk_event_get_event_type (event);
+    if (type == GDK_BUTTON_PRESS && gdk_button_event_get_button (event) == GDK_BUTTON_PRIMARY)
+    {
+        double x, y;
+        graphene_point_t point;
+        GtkNative *native = gtk_widget_get_native (GTK_WIDGET (self->paned));
+        self->preview_resizing = FALSE;
+        if (native != NULL && gdk_event_get_position (event, &x, &y) &&
+            gtk_widget_compute_point (GTK_WIDGET (native), GTK_WIDGET (self->paned), &GRAPHENE_POINT_INIT (x, y), &point))
+        {
+            GtkWidget *handle = preview_handle (self);
+            graphene_rect_t bounds;
+            self->preview_resizing = handle != NULL &&
+                gtk_widget_compute_bounds (handle, GTK_WIDGET (self->paned), &bounds) &&
+                graphene_rect_contains_point (&bounds, &point);
+        }
+    }
+    else if (type == GDK_BUTTON_RELEASE && gdk_button_event_get_button (event) == GDK_BUTTON_PRIMARY && self->preview_resizing)
+    {
+        self->preview_resizing = FALSE;
+        /* A child may still report its old minimum allocation while shrinking.
+         * The native paned position describes the user's actual divider. */
+        guint width = CLAMP (gtk_widget_get_width (GTK_WIDGET (self->paned)) -
+            gtk_paned_get_position (self->paned) - preview_handle_width (self), 240, 800);
+        g_settings_set_uint (nautilus_preferences, NAUTILUS_PREFERENCES_MILLER_PREVIEW_WIDTH, width);
+        preview_preferences_changed (nautilus_preferences, NULL, self);
+    }
+    else if (type == GDK_GRAB_BROKEN) { self->preview_resizing = FALSE; }
+    return FALSE;
+}
+
+static GtkWidget *
+preview_action_button (const char *label, const char *action)
+{
+    GtkWidget *button = gtk_button_new_with_label (label);
+    gtk_actionable_set_action_name (GTK_ACTIONABLE (button), action);
+    return button;
+}
+
+static void
+create_preview_pane (NautilusMillerView *self)
+{
+    self->paned = GTK_PANED (gtk_paned_new (GTK_ORIENTATION_HORIZONTAL));
+    gtk_paned_set_start_child (self->paned, GTK_WIDGET (self->scroller));
+    gtk_paned_set_resize_start_child (self->paned, TRUE);
+    gtk_paned_set_shrink_start_child (self->paned, FALSE);
+    gtk_paned_set_resize_end_child (self->paned, FALSE);
+    gtk_paned_set_shrink_end_child (self->paned, TRUE);
+    gtk_paned_set_wide_handle (self->paned, TRUE);
+    self->preview_box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 6);
+    gtk_accessible_update_property (GTK_ACCESSIBLE (self->preview_box),
+        GTK_ACCESSIBLE_PROPERTY_LABEL, _("File inspector"), -1);
+    GtkWidget *header = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 6);
+    gtk_widget_set_margin_top (header, 6); gtk_widget_set_margin_start (header, 12); gtk_widget_set_margin_end (header, 6);
+    GtkWidget *label = gtk_label_new (_("Inspector"));
+    gtk_widget_set_hexpand (label, TRUE); gtk_label_set_xalign (GTK_LABEL (label), 0);
+    gtk_box_append (GTK_BOX (header), label);
+    GtkWidget *close = gtk_button_new_from_icon_name ("window-close-symbolic");
+    gtk_widget_set_tooltip_text (close, _("Close Preview"));
+    gtk_accessible_update_property (GTK_ACCESSIBLE (close), GTK_ACCESSIBLE_PROPERTY_LABEL, _("Close Preview"), -1);
+    gtk_actionable_set_action_name (GTK_ACTIONABLE (close), "slot.miller-preview");
+    gtk_box_append (GTK_BOX (header), close); gtk_box_append (GTK_BOX (self->preview_box), header);
+    GtkWidget *controls = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 6);
+    gtk_widget_set_margin_start (controls, 12); gtk_widget_set_margin_end (controls, 12);
+    label = gtk_label_new (_("Width")); gtk_box_append (GTK_BOX (controls), label);
+    self->preview_width = GTK_SPIN_BUTTON (gtk_spin_button_new_with_range (240, 800, 10));
+    gtk_spin_button_set_numeric (self->preview_width, TRUE);
+    gtk_widget_set_tooltip_text (GTK_WIDGET (self->preview_width), _("Preview width"));
+    gtk_accessible_update_property (GTK_ACCESSIBLE (self->preview_width),
+        GTK_ACCESSIBLE_PROPERTY_LABEL, _("Preview width"), -1);
+    gtk_box_append (GTK_BOX (controls), GTK_WIDGET (self->preview_width));
+    gtk_box_append (GTK_BOX (self->preview_box), controls);
+    self->preview = NAUTILUS_MILLER_PREVIEW (nautilus_miller_preview_new ());
+    gtk_widget_set_vexpand (GTK_WIDGET (self->preview), TRUE);
+    gtk_box_append (GTK_BOX (self->preview_box), GTK_WIDGET (self->preview));
+    GtkWidget *actions = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 6);
+    gtk_widget_set_margin_start (actions, 12); gtk_widget_set_margin_bottom (actions, 12);
+    gtk_box_append (GTK_BOX (actions), preview_action_button (_("Open"), "view.open-with-default-application"));
+    gtk_box_append (GTK_BOX (actions), preview_action_button (_("Properties"), "view.properties"));
+    gtk_box_append (GTK_BOX (self->preview_box), actions);
+    gtk_paned_set_end_child (self->paned, self->preview_box);
+    adw_bin_set_child (ADW_BIN (self), GTK_WIDGET (self->paned));
+    preview_preferences_changed (nautilus_preferences, NULL, self);
+    g_signal_connect_object (self->preview_width, "value-changed", G_CALLBACK (preview_width_changed), self, 0);
+    g_signal_connect_object (nautilus_preferences, "changed::" NAUTILUS_PREFERENCES_MILLER_PREVIEW_VISIBLE,
+        G_CALLBACK (preview_preferences_changed), self, 0);
+    g_signal_connect_object (nautilus_preferences, "changed::" NAUTILUS_PREFERENCES_MILLER_PREVIEW_WIDTH,
+        G_CALLBACK (preview_preferences_changed), self, 0);
+    GtkEventController *resize = gtk_event_controller_legacy_new ();
+    gtk_event_controller_set_propagation_phase (resize, GTK_PHASE_CAPTURE);
+    g_signal_connect_object (resize, "event", G_CALLBACK (preview_resize_event), self, 0);
+    gtk_widget_add_controller (GTK_WIDGET (self->paned), resize);
+}
+
+static void
 set_active_view (NautilusMillerView *self, NautilusFilesView *view)
 {
     if (!self->restoring) { cancel_restore (self); }
@@ -98,6 +265,7 @@ set_active_view (NautilusMillerView *self, NautilusFilesView *view)
         gtk_widget_remove_css_class (GTK_WIDGET (self->active_view), "miller-active");
     }
     self->active_view = view;
+    update_preview (self);
     if (view != NULL)
     {
         gtk_widget_add_css_class (GTK_WIDGET (view), "miller-active");
@@ -267,6 +435,7 @@ selection_changed (NautilusFilesView *view, MillerColumn *column)
     }
     nautilus_file_list_free (column->observed_selection);
     column->observed_selection = g_steal_pointer (&selection);
+    if (!same && column->owner->active_view == view) { update_preview (column->owner); }
     /* FilesView coalesces selection notifications and also sends them after
      * model updates. An unchanged ancestor selection is not new navigation
      * and must not reclaim action ownership from a child we just entered. */
@@ -937,6 +1106,7 @@ void
 nautilus_miller_view_set_active (NautilusMillerView *self, gboolean active)
 {
     self->active = active;
+    nautilus_miller_preview_set_active (self->preview, active && gtk_widget_get_visible (self->preview_box));
     if (!active) { typeahead_preference_changed (nautilus_preferences, NULL, self); }
     if (self->active_view != NULL) { nautilus_files_view_set_action_context (self->active_view, active); }
 }
@@ -1072,7 +1242,7 @@ nautilus_miller_view_init (NautilusMillerView *self)
     gtk_event_controller_set_propagation_phase (GTK_EVENT_CONTROLLER (press), GTK_PHASE_CAPTURE);
     g_signal_connect_object (press, "pressed", G_CALLBACK (manual_scroll_pressed), self, 0);
     gtk_widget_add_controller (GTK_WIDGET (self->scroller), GTK_EVENT_CONTROLLER (press));
-    adw_bin_set_child (ADW_BIN (self), GTK_WIDGET (self->scroller));
+    create_preview_pane (self);
     gtk_widget_add_css_class (GTK_WIDGET (self), "nautilus-miller-view");
 }
 

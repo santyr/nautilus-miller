@@ -14,7 +14,11 @@ Typing selects the first matching loaded name in the active column, without laun
 
 The toolbar cycles **List → Grid → Columns → List** in ordinary folders. Its icon, tooltip, and accessible name describe the next view. In special locations that do not support Columns, the toggle cycles List and Grid; selecting Columns explicitly still saves it for ordinary browsing. **Ctrl+1** selects List, **Ctrl+2** Grid, and **Ctrl+3** Columns.
 
-Search, Recent, Starred, Trash, and the Network overview use their existing views. Columns returns when you resume ordinary folder browsing. This version has no file preview pane.
+Search, Recent, Starred, Trash, and the Network overview use their existing views. Columns returns when you resume ordinary folder browsing.
+
+In the development build, **View Options → Show Preview** or **Ctrl+Shift+P** toggles the optional inspector. It follows the active column’s selection, including a parent whose child is still open. It shows file/folder metadata, honest multiple-selection totals and bounded UTF-8 text (up to128KiB read and32KiB displayed). Unsupported content has a metadata fallback. Remote file contents are currently disabled. Images, document/media representations and expanded external-preview acceptance remain in development.
+
+Drag the native divider or use **Preview width** to resize the inspector independently of directory columns (240–800 logical pixels; default320). Visibility and width survive restart. **Open** and **Properties** use Nautilus’s existing actions. **Close Preview** returns focus to the active listing if the inspector owned it; location-entry focus is retained when toggling from there. These development changes have not been installed over the current RPM.
 
 ## Build and run on Fedora 44
 

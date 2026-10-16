@@ -501,6 +501,8 @@ nautilus_window_slot_sync_actions (NautilusWindowSlot *self)
      * because setting the search enabled or not actually opens a location */
     update_search_visible (self);
 
+    action = g_action_map_lookup_action (G_ACTION_MAP (self->slot_action_group), "miller-preview");
+    g_simple_action_set_enabled (G_SIMPLE_ACTION (action), self->miller_view != NULL);
     /* Files view mode */
     guint view_id = nautilus_files_view_get_view_id (self->content_view);
     is_network_view = view_id == NAUTILUS_VIEW_NETWORK_ID;
@@ -1423,6 +1425,23 @@ action_unstar_current_directory (GSimpleAction *action,
                                        &(GList){ .data = self->viewed_file }, NULL, NULL, NULL);
 }
 
+static void
+preview_setting_changed (GSettings *settings, const char *key, NautilusWindowSlot *self)
+{
+    if (self->slot_action_group == NULL) { return; }
+    GSimpleAction *action = G_SIMPLE_ACTION (g_action_map_lookup_action (G_ACTION_MAP (self->slot_action_group), "miller-preview"));
+    g_simple_action_set_state (action, g_variant_new_boolean (
+        g_settings_get_boolean (settings, NAUTILUS_PREFERENCES_MILLER_PREVIEW_VISIBLE)));
+    g_simple_action_set_enabled (action, self->miller_view != NULL);
+}
+
+static void
+action_miller_preview (GSimpleAction *action, GVariant *state, gpointer data)
+{
+    g_settings_set_boolean (nautilus_preferences, NAUTILUS_PREFERENCES_MILLER_PREVIEW_VISIBLE,
+                            g_variant_get_boolean (state));
+}
+
 const GActionEntry slot_entries[] =
 {
     { .name = "open-location", .activate = action_open_location, .parameter_type = "s" },
@@ -1437,6 +1456,7 @@ const GActionEntry slot_entries[] =
         .state = "uint32 " G_STRINGIFY (NAUTILUS_VIEW_INVALID_ID),
         .change_state = action_files_view_mode
     },
+    { .name = "miller-preview", .state = "false", .change_state = action_miller_preview },
     { .name = "files-view-mode-toggle", .activate = action_files_view_mode_toggle },
     { .name = "search-visible", .state = "false", .change_state = action_search_visible },
     { .name = "search-global", .state = "false", .change_state = action_search_global },
@@ -1531,6 +1551,9 @@ nautilus_window_slot_init (NautilusWindowSlot *self)
                                     "slot",
                                     G_ACTION_GROUP (self->slot_action_group));
 
+    preview_setting_changed (nautilus_preferences, NULL, self);
+    g_signal_connect_object (nautilus_preferences, "changed::" NAUTILUS_PREFERENCES_MILLER_PREVIEW_VISIBLE,
+        G_CALLBACK (preview_setting_changed), self, 0);
     self->shortcuts = GTK_SHORTCUT_CONTROLLER (gtk_shortcut_controller_new ());
 
     gtk_shortcut_controller_set_scope (self->shortcuts, GTK_SHORTCUT_SCOPE_MANAGED);
@@ -1562,6 +1585,7 @@ nautilus_window_slot_init (NautilusWindowSlot *self)
     ADD_SHORTCUT_FOR_ACTION_WITH_ARGS (self->shortcuts,
                                        "slot.open-location", "Favorites",
                                        "s", SCHEME_STARRED ":///");
+    ADD_SHORTCUT_FOR_ACTION (self->shortcuts, "slot.miller-preview", "<control><shift>p");
     ADD_SHORTCUT_FOR_ACTION (self->shortcuts, "slot.focus-search", "<control>f|Search");
     ADD_SHORTCUT_FOR_ACTION (self->shortcuts, "slot.search-global", "<control><shift>f");
     ADD_SHORTCUT_FOR_ACTION (self->shortcuts, "slot.reload", "F5|<ctrl>r|Refresh|Reload");
@@ -3104,6 +3128,7 @@ clear_content_view (NautilusWindowSlot *self)
     }
     g_clear_object (&self->content_view);
     g_clear_object (&self->miller_view);
+    preview_setting_changed (nautilus_preferences, NULL, self);
 }
 
 static void
@@ -3137,6 +3162,7 @@ create_and_bind_new_content_view (NautilusWindowSlot *self, guint view_id)
         bind_content_view (self, view);
     }
     gtk_widget_set_vexpand (self->content_widget, TRUE);
+    preview_setting_changed (nautilus_preferences, NULL, self);
 }
 
 static void

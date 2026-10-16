@@ -530,7 +530,7 @@ assert_column_visible (NautilusMillerView *strip, NautilusFilesView *view)
     GtkWidget *box = gtk_widget_get_parent (GTK_WIDGET (view));
     graphene_rect_t bounds;
     g_assert_true (gtk_widget_compute_bounds (box, gtk_widget_get_parent (box), &bounds));
-    GtkScrolledWindow *scroller = GTK_SCROLLED_WINDOW (adw_bin_get_child (ADW_BIN (strip)));
+    GtkScrolledWindow *scroller = GTK_SCROLLED_WINDOW (find_widget_type (GTK_WIDGET (strip), GTK_TYPE_SCROLLED_WINDOW));
     GtkAdjustment *adjustment = gtk_scrolled_window_get_hadjustment (scroller);
     double value = gtk_adjustment_get_value (adjustment);
     double page = gtk_adjustment_get_page_size (adjustment);
@@ -571,7 +571,7 @@ test_minimal_reveal (void)
     /* Disclosure must keep the focused parent visible even if child is wider
      * than the viewport. The old unconditional end-scroll hides it entirely. */
     assert_column_visible (strip, parent_view);
-    GtkScrolledWindow *scroller = GTK_SCROLLED_WINDOW (adw_bin_get_child (ADW_BIN (strip)));
+    GtkScrolledWindow *scroller = GTK_SCROLLED_WINDOW (find_widget_type (GTK_WIDGET (strip), GTK_TYPE_SCROLLED_WINDOW));
     GtkAdjustment *adjustment = gtk_scrolled_window_get_hadjustment (scroller);
     gtk_adjustment_set_value (adjustment, 0);
     /* Delayed slot echo of the selection-driven navigation is not a new user
@@ -1080,6 +1080,14 @@ test_full_window_operations (void)
     test_clear_tmp_dir ();
 }
 
+static void
+test_new_folder_with_preview (void)
+{
+    g_settings_set_boolean (nautilus_preferences, "miller-preview-visible", TRUE);
+    test_new_folder_captures_parent_context ();
+    g_settings_reset (nautilus_preferences, "miller-preview-visible");
+}
+
 int
 main (int argc, char **argv)
 {
@@ -1105,6 +1113,7 @@ main (int argc, char **argv)
     g_test_add_func ("/miller/view/entry-arrows", test_entry_arrows_do_not_navigate);
     g_test_add_func ("/miller/view/context-menu-action-owner", test_context_menu_owns_its_actions);
     g_test_add_func ("/miller/view/new-folder-parent-context", test_new_folder_captures_parent_context);
+    g_test_add_func ("/miller/view/new-folder-with-preview", test_new_folder_with_preview);
     g_test_add_func ("/miller/view/branch-selection", test_branch_selection);
     g_test_add_func ("/miller/view/deep-path-and-replacement", test_deep_path_and_replacement);
     return g_test_run ();

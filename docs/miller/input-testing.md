@@ -96,3 +96,15 @@ python3 test/miller/test-preview-io.py
 The ordinary Meson executable passes20 cases and explicitly skips2 requiring the actual archive fixture. Cases cover empty/folder/multiple metadata, partial and unknown cached totals, yielding aggregation, bounded/invalid/empty/UTF8 text, nonblocking FIFO and symbolic-link rejection, controlled file replacement, hiding/inactive/disposal, retained entry focus and reentrant metadata/text/loading callbacks selecting a newer target. A folder inotify watch asserts no directory open. The2048-item aggregation fixture repeats cached file objects; it is not a real large-directory benchmark.
 
 The two Python I/O observations use separate actual private sessions. Strace observes each native preview open with `O_NONBLOCK|O_NOFOLLOW`, two reads totaling exactly131072 bytes each and closed descriptors. Actual GVfs protocol logging observes metadata `QueryInfo` and no `OpenForRead` while remote content is disabled. The paused-backend case verifies the preview timeout near five seconds while the owned backend is still stopped; resuming then selecting a local file succeeds. None of this substitutes for SFTP/SMB, image decoding, external Sushi or integrated pane acceptance.
+
+## Integrated inspector and persistence
+
+```sh
+meson compile -C build-miller
+python3 tools/miller/with-test-session.py -- python3 tools/miller/with-test-home.py -- env GTK_A11Y=test GSETTINGS_SCHEMA_DIR="$PWD/build-miller/data" build-miller/test/automated/display/test-miller-preview-ui
+python3 test/miller/test-preview-restart.py
+```
+
+Nine ordinary cases cover parent and empty-child targets, history, Grid/special-view return, inactive/closed tabs and weak destruction, control focus/close, independent sizing, actual pointer enlargement/shrinking/minimum and repeated genuine Ctrl+Shift+P with a focused Ctrl+L entry. The tenth case skips unless the separate-process helper supplies its phase. That helper shares only private dconf/XDG and mounted disposable Home between two actual processes; it checks visibility,410-pixel pane sizing, remote-policy persistence, distinct PIDs and a real dconf database.
+
+Pane resizing uses GtkPaned and native mouse interaction. State persistence observes the divider position on release; it does not implement a second gesture. Open/Properties buttons resolve the existing Nautilus actions in the current action context. The directory scroller retains its minimum size when the inspector is hidden. [GTK4.22.5’s implementation](https://github.com/GNOME/gtk/blob/4.22.5/gtk/gtkpaned.c) describes its native shrink/resize policy. Existing New Folder wrong-target assertions also run with the inspector visible. These cases do not replace the required screen-reader/scaling/RTL or file-operation/clipboard/drag workflows.

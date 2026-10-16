@@ -91,7 +91,7 @@ vertical (NautilusFilesView *view)
 }
 static GtkAdjustment *horizontal (Fixture *f)
 {
-    return gtk_scrolled_window_get_hadjustment (GTK_SCROLLED_WINDOW (adw_bin_get_child (ADW_BIN (f->strip))));
+    return gtk_scrolled_window_get_hadjustment (GTK_SCROLLED_WINDOW (find_widget_type (GTK_WIDGET (f->strip), GTK_TYPE_SCROLLED_WINDOW)));
 }
 static void
 select_file (NautilusFilesView *view, GFile *location)
@@ -297,7 +297,7 @@ test_manual_scroll_cancels (Fixture *f, gconstpointer unused)
     gtk_adjustment_set_value (horizontal (f), 200); pump (50);
     g_autoptr (GVariant) state = nautilus_miller_view_capture_state (f->strip, FALSE);
     nautilus_miller_view_restore_state (f->strip, state, FALSE);
-    GtkWidget *scroller = adw_bin_get_child (ADW_BIN (f->strip));
+    GtkWidget *scroller = find_widget_type (GTK_WIDGET (f->strip), GTK_TYPE_SCROLLED_WINDOW);
     g_autoptr (GListModel) controllers = gtk_widget_observe_controllers (scroller);
     gboolean sent = FALSE;
     for (guint i = 0; i < g_list_model_get_n_items (controllers); i++)
