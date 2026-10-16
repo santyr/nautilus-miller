@@ -1,5 +1,6 @@
 tests = {
   'test-miller-view': {'is_parallel': false, 'env': ['GTK_A11Y=test']},
+  'test-miller-input': {'is_parallel': false, 'env': ['GTK_A11Y=test']},
   'test-nautilus-directory-async': {},
   'test-file-operations-create': {},
   'test-files-view': {

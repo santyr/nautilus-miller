@@ -27,7 +27,7 @@
 - A100k-row prefix miss must yield between bounded chunks; closed columns cannot publish late selection (Task2).
 - Ctrl+F, Ctrl+L, F2, Ctrl+C/V and typed editing retain native behavior, including preference-off stock search (Task3).
 
-### Task1: Guarded private compositor input
+### Task 1: Guarded private compositor input
 
 **Files:** modify `tools/miller/with-test-session.py`, `test/miller/test-session.py`, test Meson files; create `test/automated/miller-test-input.[ch]`, `test/automated/display/test-miller-input.c`.
 
@@ -37,7 +37,7 @@
 - [ ] Implement marker and guarded test helper; use existing harness cleanup, never host process termination. Genuine GTK entry test receives actual compositor `x`, click/keyboard modifier events and preserves command exit status. Run under private session; absent private marker is an explicit skipped environment, not a pass.
 - [ ] Run Python harness tests and targeted Meson guard/input tests. Commit with evidence; full suite at task gate.
 
-### Task2: Bounded Unicode/IME typeahead engine
+### Task 2: Bounded Unicode/IME typeahead engine
 
 **Files:** create `src/nautilus-miller-typeahead.[ch]`, displayless Unicode-policy tests and display tests; modify source/test Meson files.
 
@@ -49,7 +49,7 @@
 - [ ] Implement policy and engine, respecting borrowed file display names and real model item types. Use native ListBase cursor/selection to preserve existing operation/disclosure machinery. Hold temporary references across callbacks that can reenter navigation; no source/object reference cycle.
 - [ ] Run policy/GTK tests and full existing suite; commit.
 
-### Task3: Scoped integration and genuine IME acceptance
+### Task 3: Scoped integration and genuine IME acceptance
 
 **Files:** strip, slot and preferences source/schema/UI; new genuine-input tests; interaction contract, README and acceptance ledger.
 

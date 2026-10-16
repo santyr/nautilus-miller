@@ -1,4 +1,4 @@
-test_utils = files('test-utilities.c')
+test_utils = files('test-utilities.c', 'miller-test-input.c')
 
 libtestutils = static_library(
   'testutils',

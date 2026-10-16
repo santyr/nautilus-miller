@@ -29,5 +29,36 @@ class Session(unittest.TestCase):
                                 capture_output=True, text=True)
         self.assertEqual(result.returncode, 23, result.stderr)
 
+    def test_inside_refuses_unowned_runtime(self):
+        result = subprocess.run([sys.executable, str(SCRIPT), '--inside', '--', 'true'],
+            env={**os.environ, 'XDG_RUNTIME_DIR': f'/run/user/{os.getuid()}'},
+            capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('owned private runtime', result.stderr)
+
+    def test_private_input_marker_and_service_owner(self):
+        code = '''import configparser,os,pathlib,stat,subprocess,json
+path=pathlib.Path(os.environ['MILLER_TEST_SESSION'])
+marker=configparser.ConfigParser()
+marker.read(path)
+data=marker['session']
+assert path.parent == pathlib.Path(os.environ['XDG_RUNTIME_DIR'])
+assert stat.S_IMODE(path.stat().st_mode) == 0o600
+assert data['runtime'] == os.environ['XDG_RUNTIME_DIR']
+assert data['display'] == os.environ['WAYLAND_DISPLAY']
+assert data['bus-address'] == os.environ['DBUS_SESSION_BUS_ADDRESS']
+result=subprocess.check_output(['gdbus','call','--session','--dest','org.freedesktop.DBus',
+'--object-path','/org/freedesktop/DBus','--method',
+'org.freedesktop.DBus.GetConnectionUnixProcessID','org.gnome.Mutter.RemoteDesktop'],text=True)
+assert result.strip() == '(uint32 '+data['compositor-pid']+',)'
+print(json.dumps({'marker':str(path),'pid':int(data['compositor-pid'])}))
+'''
+        result=subprocess.run([sys.executable,str(SCRIPT),'--',sys.executable,'-c',code],
+                              capture_output=True,text=True)
+        self.assertEqual(result.returncode,0,result.stderr)
+        state=json.loads(result.stdout)
+        self.assertGreater(state['pid'],0)
+        self.assertFalse(Path(state['marker']).exists())
+
 if __name__ == '__main__':
     unittest.main()
