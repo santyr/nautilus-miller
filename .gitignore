@@ -17,3 +17,4 @@ build/
 /heaptrack.nautilus.*
 
 /build-*/
+__pycache__/

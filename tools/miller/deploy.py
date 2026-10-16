@@ -170,7 +170,18 @@ def package_info(path, replacement=False, require_signature=False):
         raise ValueError('Expected a Nautilus Miller replacement RPM')
     run('rpm', '--checksig', '--nosignature', str(path), capture=True)
     if require_signature:
-        run('rpmkeys', '--checksig', str(path), capture=True)
+        # rpmkeys inherits the host verification policy, which can accept unsigned
+        # packages. Require signatures and trust only this Fedora release's key,
+        # not every third-party key installed in the system RPM database.
+        release = validate_host().removeprefix('.fc')
+        key = pathlib.Path(f'/etc/pki/rpm-gpg/RPM-GPG-KEY-fedora-{release}-primary')
+        if not key.is_file():
+            raise ValueError(f'Fedora rollback signing key is unavailable: {key}')
+        with tempfile.TemporaryDirectory(prefix='miller-rollback-keyring-') as keyring:
+            options = ('--dbpath', keyring, '--define', '_keyring rpmdb',
+                       '--define', '_pkgverify_level all', '--define', '_pkgverify_flags 0x0')
+            run('rpmkeys', *options, '--import', str(key), capture=True)
+            run('rpmkeys', *options, '--checksig', str(path), capture=True)
     return {'name': fields[0], 'version': fields[1], 'arch': fields[2],
             'nevra': f'{fields[0]}-{fields[1]}.{fields[2]}', 'path': str(path)}
 

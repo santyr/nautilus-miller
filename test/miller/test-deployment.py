@@ -6,9 +6,91 @@ import unittest
 import importlib.util
 import json
 import tempfile
+import shutil
+from types import SimpleNamespace
 from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
+
+class DeploymentSignatures(unittest.TestCase):
+    @unittest.skipUnless(shutil.which('rpmbuild'), 'requires the Fedora RPM build tools')
+    def test_unsigned_stock_identity_is_not_trusted(self):
+        """A valid unsigned RPM must not become the original rollback baseline."""
+        spec = importlib.util.spec_from_file_location('signature_deploy', ROOT / 'tools/miller/deploy.py')
+        deploy = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(deploy)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            source = root / 'unsigned.spec'
+            source.write_text('''Name: nautilus
+Version: 50.4
+Release: 1.fc44
+Summary: Disposable unsigned rollback validation fixture
+License: GPL-3.0-or-later
+BuildArch: noarch
+%description
+An empty package used only to check signature enforcement.
+%files
+''')
+            subprocess.run(['rpmbuild', '--define', f'_topdir {root}', '-bb', str(source)],
+                           check=True, capture_output=True, text=True)
+            package = next((root/'RPMS').rglob('*.rpm'))
+            self.assertEqual(deploy.package_info(package)['name'], 'nautilus')
+            with self.assertRaises((ValueError, subprocess.CalledProcessError)):
+                deploy.package_info(package, require_signature=True)
+
+class DeploymentRuntimeChecks(unittest.TestCase):
+    def setUp(self):
+        spec = importlib.util.spec_from_file_location('runtime_deploy', ROOT / 'tools/miller/deploy.py')
+        self.deploy = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.deploy)
+
+    def test_held_operation_stops_drain_without_force_kill(self):
+        with mock.patch.object(self.deploy, 'has_application', return_value=True), \
+             mock.patch.object(self.deploy, 'run') as command, \
+             mock.patch.object(self.deploy.time, 'monotonic', side_effect=[0, 26]):
+            with self.assertRaisesRegex(RuntimeError, 'not force-killed'):
+                self.deploy.close_application()
+        self.assertEqual(command.call_count, 1)
+        self.assertIn('quit', command.call_args.args)
+
+    def check_activation(self, *, other_owner=False, stale_inode=False,
+                         wrong_view=False, wrong_packages=False):
+        packages = [{'name': 'nautilus', 'nevra': 'nautilus-50.4-1.miller2.fc44.x86_64'}]
+        def command(*args, capture=False):
+            if args[0] == 'rpm':
+                return 'wrong-package' if wrong_packages else packages[0]['nevra']
+            if args[0] == 'xdg-mime':
+                return self.deploy.HANDLER
+            return "'grid-view'" if wrong_view else "'miller-view'"
+        def stat(path):
+            return SimpleNamespace(st_dev=1, st_ino=2 if stale_inode and str(path).startswith('/proc/') else 1)
+        with mock.patch.object(self.deploy, 'service_pid', side_effect=[123, 456 if other_owner else 123]), \
+             mock.patch.object(self.deploy, 'run', side_effect=command), \
+             mock.patch.object(self.deploy.time, 'monotonic', side_effect=[0, 0, 21]), \
+             mock.patch.object(self.deploy.time, 'sleep'), \
+             mock.patch.object(pathlib.Path, 'resolve', return_value=pathlib.Path('/usr/bin/nautilus')), \
+             mock.patch.object(pathlib.Path, 'stat', stat):
+            return self.deploy.verify_running(packages, self.deploy.HANDLER, "'miller-view'")
+
+    def test_matching_activation_is_accepted(self):
+        self.assertEqual(self.check_activation()['pid'], 123)
+
+    def test_different_service_owners_are_rejected(self):
+        with self.assertRaisesRegex(RuntimeError, 'different process owners'):
+            self.check_activation(other_owner=True)
+
+    def test_old_executable_inode_is_rejected(self):
+        with self.assertRaisesRegex(RuntimeError, 'installed executable inode'):
+            self.check_activation(stale_inode=True)
+
+    def test_wrong_folder_setting_is_rejected(self):
+        with self.assertRaisesRegex(RuntimeError, 'Folder preference'):
+            self.check_activation(wrong_view=True)
+
+    def test_wrong_installed_package_is_rejected(self):
+        with self.assertRaisesRegex(RuntimeError, 'split packages'):
+            self.check_activation(wrong_packages=True)
 
 class DeploymentInputs(unittest.TestCase):
     def test_missing_package_is_rejected(self):
