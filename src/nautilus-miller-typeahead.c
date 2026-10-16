@@ -320,6 +320,9 @@ nautilus_miller_typeahead_handle_event (NautilusMillerTypeahead *self, GdkEvent 
     }
     if (gtk_im_context_filter_keypress (self->context, event)) { return TRUE; }
     if (type != GDK_KEY_PRESS) { return FALSE; }
+    /* Shift, locks and other modifier-only presses do not finish the prefix.
+     * The following text or shortcut key determines how it is handled. */
+    if (gdk_key_event_is_modifier (event)) { return FALSE; }
     if (composing && !(state & (GDK_CONTROL_MASK | GDK_ALT_MASK | GDK_SUPER_MASK)))
     {
         if (keyval == GDK_KEY_Escape) { nautilus_miller_typeahead_reset (self); }

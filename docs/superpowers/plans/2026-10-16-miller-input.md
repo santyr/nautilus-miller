@@ -1,6 +1,6 @@
 # Miller Input and Type-to-Select Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Implement the Stage2 input contract: guarded genuine session input, Unicode/IME-aware type-to-select enabled by default in Columns, discoverable stock-search preference and verified native shortcut boundaries.
 
@@ -33,9 +33,9 @@
 
 **Interfaces:** harness writes600-mode `runtime/miller-session.ini` containing exact runtime, absolute Wayland socket, private D-Bus address and owned compositor PID, and exports `MILLER_TEST_SESSION`. Wait for the socket and RemoteDesktop service owned by that PID before launching the test command. `MillerTestInput *miller_test_input_new(GError**)` validates marker ownership/mode/paths/environment and bus service PID before CreateSession. Keep the creating connection/session until `miller_test_input_free`. Initialize lazy keyboard/pointer devices before GTK windows map. Expose `miller_test_input_key(input,keysym,pressed,error)`, `miller_test_input_button(input,button,pressed,error)`, and relative motion, each rechecking owner PID before delivery. No fallback to host devices, display or portals. Pure guard validator takes marker/runtime/display/address arguments for negative unit tests; constructor additionally verifies current bus/process identity.
 
-- [ ] RED Python harness marker/readiness assertions and C guard/smoke tests before implementation. Guard rejects missing marker, symlink, wrong owner/mode, wrong display/runtime/bus, invalid PID and canonical host runtime. Negative guard tests never create a remote session.
-- [ ] Implement marker and guarded test helper; use existing harness cleanup, never host process termination. Genuine GTK entry test receives actual compositor `x`, click/keyboard modifier events and preserves command exit status. Run under private session; absent private marker is an explicit skipped environment, not a pass.
-- [ ] Run Python harness tests and targeted Meson guard/input tests. Commit with evidence; full suite at task gate.
+- [x] RED Python harness marker/readiness assertions and C guard/smoke tests before implementation. Guard rejects missing marker, symlink, wrong owner/mode, wrong display/runtime/bus, invalid PID and canonical host runtime. Negative guard tests never create a remote session.
+- [x] Implement marker and guarded test helper; use existing harness cleanup, never host process termination. Genuine GTK entry test receives actual compositor `x`, click/keyboard modifier events and preserves command exit status. Run under private session; absent private marker is an explicit skipped environment, not a pass.
+- [x] Run Python harness tests and targeted Meson guard/input tests. Commit with evidence; full suite at task gate.
 
 ### Task 2: Bounded Unicode/IME typeahead engine
 
@@ -45,9 +45,9 @@
 
 **Policy:** prefix limit256 Unicode characters, inactivity reset1second outside preedit, compatibility normalization(NFKC)+Unicode case fold, first matching loaded row in current sort order. Backspace removes one grapheme; Escape clears active prefix/preedit without navigation; bare Space outside preedit retains Quick Look. Committed strings may contain Unicode/IME spaces. No activation on commit. Preedit text is displayed but does not select. Match at most256 rows or4ms per idle; capture model/generation, cancel/restart on changes and ignore stale owners. Hint is plain text, no markup, named for accessibility, hidden when idle. Candidate scans never enumerate or fetch remote content.
 
-- [ ] RED policy cases: composed/decomposed accents, case-fold expansions, CJK/Hangul, grapheme/emoji removal, invalid UTF8,256-character bound. RED GTK commit→selection, preedit→no selection, cancel/close/model replacement→no stale selection; empty/large model miss yields to main loop.
-- [ ] Implement policy and engine, respecting borrowed file display names and real model item types. Use native ListBase cursor/selection to preserve existing operation/disclosure machinery. Hold temporary references across callbacks that can reenter navigation; no source/object reference cycle.
-- [ ] Run policy/GTK tests and full existing suite; commit.
+- [x] RED policy cases: composed/decomposed accents, case-fold expansions, CJK/Hangul, grapheme/emoji removal, invalid UTF8,256-character bound. RED GTK commit→selection, preedit→no selection, cancel/close/model replacement→no stale selection; empty/large model miss yields to main loop.
+- [x] Implement policy and engine, respecting borrowed file display names and real model item types. Use native ListBase cursor/selection to preserve existing operation/disclosure machinery. Hold temporary references across callbacks that can reenter navigation; no source/object reference cycle.
+- [x] Run policy/GTK tests and full existing suite; commit.
 
 ### Task 3: Scoped integration and genuine IME acceptance
 
@@ -55,10 +55,10 @@
 
 **Interfaces:** schema `miller-type-to-select` boolean defaulttrue, Preferences switch “Type to Select in Columns”, subtitle “Type a name to select it in the current column. Use Ctrl+F to search.” Strip capture legacy controller routes key press/release only from active listing (exclude Editable/Popover descendants). Per-column hint/object lifetime is explicit; focus leave/tab deactivation/settings disable resets composition and scans. Parent strip capture precedes FilesView shortcuts so IME Space/Enter can consume before preview/activation. Slot disables implicit type-to-search only for enabled Columns while explicit search remains usable; Grid/List unchanged.
 
-- [ ] RED genuine keyboard test: typing selects loaded ASCII/Unicode files without opening recursive search or launching. Native arrows and Enter/F2/modifiers retain behavior. Preference-off typing opens stock search, Ctrl+F always opens explicit search; Ctrl+L/editor/rename keys do not change branch.
-- [ ] Implement scoped settings/integration. Add rapid selection→Right before coalesced notification regression: old parent must not reclaim child action/focus. Correct only reproduced lifetime/ownership faults.
-- [ ] In a disposable IBus/Anthy session with `GTK_IM_MODULE=ibus`, deliver actual compositor keys for Japanese preedit/conversion/commit. Assert preedit doesn't select, Space doesn't preview, Enter commits without launch, committed Unicode selects correct file, focus stays in list; switching/closing tab discards late composition. Missing engine/session is explicitly blocked/skipped, never mislabeled verified.
-- [ ] Run real input, full Meson/Python/profile checks and process-restart width/preference persistence check. Record exact revision/session/logs and limitations. Commit; one fresh whole-plan independent review, one red/green correction pass for Important/Critical findings. Keep later requirements active.
+- [x] RED genuine keyboard test: typing selects loaded ASCII/Unicode files without opening recursive search or launching. Native arrows and Enter/F2/modifiers retain behavior. Preference-off typing opens stock search, Ctrl+F always opens explicit search; Ctrl+L/editor/rename keys do not change branch.
+- [x] Implement scoped settings/integration. Add rapid selection→Right before coalesced notification regression: old parent must not reclaim child action/focus. Correct only reproduced lifetime/ownership faults.
+- [x] In a disposable IBus/Anthy session with `GTK_IM_MODULE=ibus`, deliver actual compositor keys for Japanese preedit/conversion/commit. Assert preedit doesn't select, Space doesn't preview, Enter commits without launch, committed Unicode selects correct file, focus stays in list; switching/closing tab discards late composition. Missing engine/session is explicitly blocked/skipped, never mislabeled verified.
+- [x] Run real input, full Meson/Python/profile checks and process-restart width/preference persistence check. Record exact revision/session/logs and limitations. Commit; one fresh whole-plan independent review, one red/green correction pass for Important/Critical findings. Keep later requirements active.
 
 ## Design reasoning
 

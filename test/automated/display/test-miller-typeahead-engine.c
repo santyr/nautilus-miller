@@ -338,6 +338,38 @@ test_genuine_keys (Fixture *f, gconstpointer unused)
     drain (f);
     assert_selected (f, f->beta);
     g_assert_cmpstr (nautilus_miller_typeahead_get_prefix (f->engine), ==, "b");
+    /* A modifier press is not a new search or a completed shortcut. Keep the
+     * existing prefix while the following shifted text is committed. */
+    g_assert_true (miller_test_input_key (input, GDK_KEY_Shift_L, TRUE, &error));
+    g_assert_true (miller_test_input_key (input, GDK_KEY_e, TRUE, &error));
+    g_assert_true (miller_test_input_key (input, GDK_KEY_e, FALSE, &error));
+    g_assert_true (miller_test_input_key (input, GDK_KEY_Shift_L, FALSE, &error));
+    deadline = g_get_monotonic_time () + 3 * G_TIME_SPAN_SECOND;
+    while (g_strcmp0 (nautilus_miller_typeahead_get_prefix (f->engine), "bE") != 0 &&
+           g_get_monotonic_time () < deadline)
+    {
+        g_main_context_iteration (NULL, FALSE); g_usleep (1000);
+    }
+    g_assert_cmpstr (nautilus_miller_typeahead_get_prefix (f->engine), ==, "bE");
+    drain (f);
+    assert_selected (f, f->beta);
+    g_assert_true (miller_test_input_key (input, GDK_KEY_Control_L, TRUE, &error));
+    g_assert_true (miller_test_input_key (input, GDK_KEY_Control_L, FALSE, &error));
+    gint64 modifier_end = g_get_monotonic_time () + 50 * G_TIME_SPAN_MILLISECOND;
+    while (g_get_monotonic_time () < modifier_end)
+    {
+        g_main_context_iteration (NULL, FALSE); g_usleep (1000);
+    }
+    g_assert_cmpstr (nautilus_miller_typeahead_get_prefix (f->engine), ==, "bE");
+    g_assert_true (miller_test_input_key (input, GDK_KEY_BackSpace, TRUE, &error));
+    g_assert_true (miller_test_input_key (input, GDK_KEY_BackSpace, FALSE, &error));
+    deadline = g_get_monotonic_time () + 3 * G_TIME_SPAN_SECOND;
+    while (g_strcmp0 (nautilus_miller_typeahead_get_prefix (f->engine), "b") != 0 &&
+           g_get_monotonic_time () < deadline)
+    {
+        g_main_context_iteration (NULL, FALSE); g_usleep (1000);
+    }
+    g_assert_cmpstr (nautilus_miller_typeahead_get_prefix (f->engine), ==, "b");
     g_assert_true (miller_test_input_key (input, GDK_KEY_BackSpace, TRUE, &error));
     g_assert_true (miller_test_input_key (input, GDK_KEY_BackSpace, FALSE, &error));
     deadline = g_get_monotonic_time () + 3 * G_TIME_SPAN_SECOND;
