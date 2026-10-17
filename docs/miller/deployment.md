@@ -1,6 +1,6 @@
 # Deployment and recovery
 
-The expanded completion goal does **not** authorize replacing the installed host file manager. These commands are for a separately authorized deployment after release acceptance. Unit tests use mocked commands and temporary state; real disposable transactions remain required by C15.
+The [current goal](finder-completion-goal.md) prepares a concrete deployment handoff. These commands require a separately authorized host deployment. Unit checks exercise failure ordering with temporary state and mocked commands; release evidence distinguishes those checks from real disposable Fedora package transactions and actual desktop activation.
 
 ## Phases
 
@@ -34,4 +34,4 @@ Read `~/.local/state/nautilus-miller/deployment.json` (or the selected XDG state
 - **Settings/launch/verify:** packages may already be replaced. No new success is recorded. Finish/retry activation or run the explicit stock restore with its saved artifacts. Previous successful metadata is `last-success.json`, not proof that this attempt succeeded.
 - **Restore failure:** the original snapshot remains. A failure before downgrade may have restored a stock-compatible folder preference while the Miller binary remains installed; this is intentional and usable. Inspect the recorded phase, correct the failure and retry restore. Missing saved artifacts are an error, never permission to downgrade to an unrelated available version.
 
-The filesystem/package operation is not globally atomic with user preference writes. The phase journal makes interruption recoverable; actual power-loss/reboot and injected-failure behavior still needs the disposable-system acceptance gate.
+The filesystem/package operation is not globally atomic with user preference writes. The phase journal preserves recovery information. Actual power-loss/reboot and full-desktop failure injection remain unexercised limitations; package-only container transactions do not establish those behaviors.

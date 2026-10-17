@@ -156,3 +156,16 @@ component evidence archive before scratch cleanup. This closes the component,
 not package/CI/readiness preparation or host deployment. No production install,
 default change, offline reset or push occurred. All11 rulings and deferred MinorM1
 above remain part of the handoff; they are not passing acceptance claims.
+
+
+### Durable evidence
+
+`build-evidence/miller-dnd-81240946e.tar.xz` is an ignored local evidence bundle,
+1,194,268bytes, SHA256
+`e456b62670af5f964a46e85600152267dbe20bd0f274bd543d49e28de1a0f59e`.
+Its263 members preserve the completed plan ledger/briefs/runner/verifier/review,
+immutable final diff, rejected outgoing fixture prototypes and raw passing and
+failed logs. Every payload was checked against the internal SHA256 manifest before
+plan scratch cleanup. Production application correction commit: `81240946e`.
+
+Release documentation follow-up: deferred MinorM1 is now resolved by aligning the interaction contract with the revised goal and completed component evidence. Its original review/correction disposition above remains historical.

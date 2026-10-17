@@ -1,6 +1,6 @@
 # Miller interaction and ownership contract
 
-Authority: [completion goal](finder-completion-goal.md), sections 3–9. This contract expands the historical initial design; it does not authorize deployment.
+Authority: [completion goal](finder-completion-goal.md), sections 1–6. This contract expands the historical initial design; it does not authorize deployment.
 
 ## State and owners
 
@@ -26,7 +26,7 @@ Native bookmarks own immutable, in-memory Columns snapshots: endpoint, active-di
 
 Returning from Grid/List or canceling search without a new selection restores the prior Columns context. A new user selection, including clearing it, supersedes that context and belongs only to the endpoint listing. An explicit reveal/navigation selection takes precedence over saved history. Missing selected files are ignored. If a native bookmark follows a renamed endpoint, a snapshot with the old endpoint identity is discarded, and ordinary native navigation loads the bookmark's current location. This fallback does not claim restoration of old scroll/selection across renamed paths.
 
-Restoration does not create history entries or activate files. Entries, popovers and other controls retain focus, including when focus moves there after restoration was requested. New navigation/selection/scroll invalidates pending strip restoration. Actual delayed-backend completion and the broader special-location/ancestor-mutation acceptance remain separate required gates.
+Restoration does not create history entries or activate files. Entries, popovers and other controls retain focus, including when focus moves there after restoration was requested. New navigation/selection/scroll invalidates pending strip restoration. Actual delayed-backend completion and special-location navigation have direct integration evidence. Additional backend/ancestor-mutation combinations follow the current goal: investigate demonstrated column defects and identify unverified combinations explicitly.
 - Toolbar/keyboard file operations use the active column even when focus is in a non-file-list control. An open context menu/dialog/drop keeps its captured context. Discarding a branch cancels or safely detaches its work.
 - Native Enter activation, F2 rename, Ctrl editing/location/selection and history/tab shortcuts remain. Columns gets Unicode/IME-aware type-to-select by default, with stock type-to-search as a preference and explicit recursive search action.
 
@@ -48,13 +48,13 @@ Selection-driven navigation also captures the action generation at the original 
 
 ## Drag browsing
 
-GTK/Nautilus own file payloads, source selection preparation, action negotiation, drop destinations and native jobs. The pointer destination is independent of the active action column. Columns retains its current native source through completion; selection notifications during that drag cannot collapse its visible destination.
+GTK/Nautilus own file payloads, source selection preparation, action negotiation, drop destinations and native jobs. The pointer destination is independent of the active action column. Columns retains its current native source through data completion. The selection-navigation guard ends on native pointer drop-performed, so a slow recipient cannot block subsequent folder clicks; late completion cannot replace the newer branch.
 
 Folder disclosure uses the existing native hover preference and timeout. During a local native drag, Miller handles that disclosure before native hover replaces selection. It captures its existing immutable browsing snapshot and preserves the committed origin bookmark. Actual temporary FilesViews may extend or replace the displayed branch while the slot's location/history remain committed to the origin. The original source selection and cached keyboard destination remain unchanged. A newer disclosure also cancels any older unresolved slot navigation through the existing native location-change cleanup, so genuinely late metadata cannot publish the obsolete branch.
 
 Cancel/rejection or leaving the strip restores the saved snapshot. Leave restoration is deferred until native drop acceptance can win and is cancelled on reentry. The compositor's expected same-source focus return does not invalidate pending drag restoration; explicit input and newer navigation still do. Accepted native input retains the disclosed endpoint and requests at most one ordinary navigation. Later native job conflicts/errors/cancellation follow the native operation policy. Newer navigation invalidates the obsolete snapshot; an old drag's remaining callback cannot restore it over a newer drag or branch.
 
-Current development evidence covers local source/target drags and a genuinely delayed older GVfs navigation. Foreign-source spring disclosure, scrolling, tabs/windows/sidebar/volumes, unmap/removal stress and actual remote disconnects retain separate required acceptance. Native Wayland exposes COPY/MOVE/ASK without LINK; the supported native Create Link commands remain the link workflow.
+Current reviewed evidence covers local source/target drags, delayed older GVfs navigation, genuine foreign incoming hover/cancel/accept, native scrolling, tab destinations/destruction and the three review regressions. [Drag review](dnd-review.md) records all exercised boundaries and explicit deferrals. Outgoing foreign receipt, exact removal/modifier/backend/stress combinations remain unverified follow-ups under the revised goal; no source audit counts as runtime compatibility. Native Wayland exposes COPY/MOVE/ASK without LINK; the supported native Create Link commands remain the link workflow.
 
 ## Preview policy
 

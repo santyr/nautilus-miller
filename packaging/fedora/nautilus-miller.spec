@@ -20,12 +20,13 @@
 
 Name:           nautilus
 Version:        50.4
-Release:        1.miller1%{?dist}
+Release:        1.miller2%{?dist}
 Summary:        GNOME file manager with Finder-style Miller columns
 
 # Sources are GPL-3.0-or-later and Appdata is CC0-1.0.
 License:        GPL-3.0-or-later AND CC0-1.0
-URL:            https://apps.gnome.org/Nautilus/
+URL:            https://github.com/santyr/nautilus-miller
+# Generated from the clean source commit recorded by tools/miller/build-rpm.sh.
 Source0:        %{name}-%{tarball_version}.tar.xz
 # https://pagure.io/fedora-workstation/issue/442
 Patch:          default-terminal.patch
@@ -82,11 +83,11 @@ Recommends:     gst-thumbnailers%{_isa}
 Provides:       bundled(libgd)
 
 %description
-Nautilus is the file manager and graphical shell for the GNOME desktop
-that makes it easy to manage your files and the rest of your system.
-It allows to browse directories on local and remote filesystems, preview
-files and launch applications associated with them.
-It is also responsible for handling the icons on the GNOME desktop.
+Nautilus Miller is a personal fork of the GNOME file manager with an
+alternate Finder-inspired column view alongside the native Grid and List
+views. It reuses Nautilus file operations, local and remote filesystem
+providers, extensions and preview infrastructure. Project support and
+issue tracking are provided by the fork maintainer.
 
 %package extensions
 Summary:        Nautilus extensions library
@@ -117,6 +118,7 @@ sed -i '/-Werror/d' meson.build
 
 %build
 %meson \
+  -Dprofile= \
   -Ddocs=true \
   -Dextensions=true \
   -Dintrospection=true \
@@ -170,5 +172,9 @@ desktop-file-validate $RPM_BUILD_ROOT%{_datadir}/applications/*.desktop
 %doc %{_datadir}/doc/nautilus/
 
 %changelog
+* Sat Oct 17 2026 Sat <santyr@users.noreply.github.com> - 50.4-1.miller2
+- Integrate native column navigation, actions, preview and drag lifetimes
+- Identify the personal fork and preserve canonical Fedora package contracts
+
 * Fri Oct 16 2026 Sat <santyr@users.noreply.github.com> - 50.4-1.miller1
 - Add Finder-style Miller columns and retain Fedora Nautilus integration

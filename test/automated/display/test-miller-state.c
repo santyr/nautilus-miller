@@ -936,6 +936,91 @@ test_navigation_entry (Fixture *f, gconstpointer unused)
         nautilus_window_slot_get_current_view (f->slot)), encoded));
 }
 
+typedef struct
+{
+    gint64 last, worst_gap;
+    guint ticks;
+} DirectoryHeartbeat;
+
+static gboolean
+sample_directory_heartbeat (gpointer data)
+{
+    DirectoryHeartbeat *sample = data;
+    gint64 now = g_get_monotonic_time ();
+    sample->worst_gap = MAX (sample->worst_gap, now - sample->last);
+    sample->last = now;
+    sample->ticks++;
+    return G_SOURCE_CONTINUE;
+}
+
+static void
+test_navigation_large_deep_responsive (Fixture *f, gconstpointer unused)
+{
+    navigation_ready ();
+    g_autoptr (GFile) first = g_file_get_child (f->root, "deep-smoke");
+    g_assert_true (g_file_make_directory (first, NULL, NULL));
+    g_autoptr (GFile) deepest = g_object_ref (first);
+    for (guint i = 0; i < 12; i++)
+    {
+        g_autofree char *name = g_strdup_printf ("level-%02u", i);
+        GFile *next = g_file_get_child (deepest, name);
+        g_assert_true (g_file_make_directory (next, NULL, NULL));
+        g_set_object (&deepest, next); g_object_unref (next);
+    }
+    g_autoptr (GFile) empty = g_file_get_child (deepest, "enter-empty");
+    g_assert_true (g_file_make_directory (empty, NULL, NULL));
+    for (guint i = 0; i < 5000; i++)
+    {
+        g_autofree char *name = g_strdup_printf ("row-%05u.txt", i);
+        g_autoptr (GFile) file = g_file_get_child (deepest, name);
+        g_assert_true (g_file_replace_contents (file, "smoke", 5, NULL, FALSE, 0, NULL, NULL, NULL));
+    }
+    DirectoryHeartbeat sample = { .last = g_get_monotonic_time () };
+    guint heartbeat = g_timeout_add (10, sample_directory_heartbeat, &sample);
+    gint64 started = g_get_monotonic_time ();
+    g_autofree char *path = g_file_get_path (deepest);
+    enter_location (f, path, deepest);
+    double entered_ms = (g_get_monotonic_time () - started) / 1000.0;
+    NautilusFilesView *large = nautilus_window_slot_get_current_view (f->slot);
+    g_assert_cmpuint (g_list_model_get_n_items (G_LIST_MODEL (
+        nautilus_files_view_get_private_model (large))), ==, 5001);
+    gpointer weak_large = large;
+    gpointer weak_first = find_view (GTK_WIDGET (f->strip), first);
+    g_assert_nonnull (weak_first);
+    g_object_add_weak_pointer (G_OBJECT (weak_large), &weak_large);
+    g_object_add_weak_pointer (G_OBJECT (weak_first), &weak_first);
+
+    key (GDK_KEY_Home, TRUE); key (GDK_KEY_Home, FALSE);
+    settle_native_location (f, empty);
+    key (GDK_KEY_Right, TRUE); key (GDK_KEY_Right, FALSE); settle_native (f);
+    g_assert_true (g_file_equal (nautilus_files_view_get_location (
+        nautilus_window_slot_get_current_view (f->slot)), empty));
+    key (GDK_KEY_Left, TRUE); key (GDK_KEY_Left, FALSE); settle_native (f);
+    g_assert_true (nautilus_window_slot_get_current_view (f->slot) == large);
+    g_assert_cmpuint (sample.ticks, >, 0);
+    g_source_remove (heartbeat);
+    g_test_message ("Real directory smoke: depth=12 regular-files=5000 rows=5001 entry-and-load-ms=%.1f heartbeat-worst-gap-ms=%.1f ticks=%u; genuine Home/Right/Left retained parent and empty child",
+                    entered_ms, sample.worst_gap / 1000.0, sample.ticks);
+
+    g_autofree char *other_path = g_file_get_path (f->other);
+    enter_location (f, other_path, f->other);
+    gint64 deadline = g_get_monotonic_time () + 10 * G_TIME_SPAN_SECOND;
+    while (weak_large != NULL || weak_first != NULL)
+    {
+        g_assert_cmpint (g_get_monotonic_time (), <, deadline); pump (10);
+    }
+    gpointer weak_strip = f->strip;
+    g_object_add_weak_pointer (G_OBJECT (weak_strip), &weak_strip);
+    /* Use the native close path, which breaks the pad-controller/window cycle. */
+    nautilus_window_close (NAUTILUS_WINDOW (f->window)); f->window = NULL;
+    g_clear_object (&f->strip); g_clear_object (&f->slot);
+    while (weak_strip != NULL)
+    {
+        g_assert_cmpint (g_get_monotonic_time (), <, deadline); pump (10);
+    }
+    g_test_message ("Real large/deep branch released first/endpoint views after native navigation and coordinator after close");
+}
+
 static void
 test_navigation_mode_keyboard (Fixture *f, gconstpointer unused)
 {
@@ -1424,6 +1509,7 @@ main (int argc, char **argv)
 } while (0)
     NAV ("initial-focus", test_navigation_initial_focus);
     NAV ("entry", test_navigation_entry);
+    NAV ("large-deep-responsive", test_navigation_large_deep_responsive);
     NAV ("mode-keyboard", test_navigation_mode_keyboard);
     NAV ("empty-mode-keyboard", test_navigation_empty_mode_keyboard);
     NAV ("breadcrumb", test_navigation_breadcrumb);

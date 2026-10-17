@@ -41,9 +41,9 @@ The focused column owns ordinary file actions. Paste, New Folder, New Document a
 | Compress / Extract | Native context menu and destination chooser |
 | Open directory in Console | Ctrl+Period when the Console provider is available |
 
-Conflict, error, permission, cancellation and Trash availability follow Nautilus's native behavior. On the tested Wayland session, Ctrl+Shift drag negotiates Move; the protocol has no Link action. Use the native Create Link commands above for links. The current host lacks Console (`kgx`); its private provider contract has development coverage. Extension/OpenPGP and drag-and-drop acceptance remain open. See [operation evidence and limitations](docs/miller/operations-verification.md) for actual tested workflows; these development changes have not replaced the installed RPM.
+Conflict, error, permission, cancellation and Trash availability follow Nautilus's native behavior. On the tested Wayland session, Ctrl+Shift drag negotiates Move; the protocol has no Link action. Use the native Create Link commands above for links. The current host lacks Console (`kgx`); its private provider contract has development coverage. Native drag and operation integration have focused regression coverage. The native extension API is preserved; this host has neither seahorse-nautilus nor nautilus-python installed, so their runtime workflows remain unverified. See [operation evidence and limitations](docs/miller/operations-verification.md) for actual tested workflows; these development changes have not replaced the installed RPM.
 
-In development builds, dragging over a folder can disclose temporary columns while preserving the dragged selection. Canceling or leaving the column strip restores the prior branch; an accepted drop keeps the disclosed destination. Copy/move behavior and conflict handling remain native. Broader drag acceptance is still in progress; see [drag verification](docs/miller/dnd-verification.md).
+Dragging over a folder discloses temporary columns while preserving the dragged selection. Canceling or leaving the strip restores the prior branch; accepted input keeps the displayed branch. Dropping onto an ancestor uses that pointer destination even if a deeper child remains displayed. Copy/move, native vertical scrolling and conflict handling use Nautilus/GTK. Columns coordinates branch restoration and outer horizontal edge scrolling. See the [drag review and exercised boundaries](docs/miller/dnd-review.md), including the explicit outgoing foreign-app and window-shrink limitations.
 
 ## Build and run on Fedora 44
 
@@ -62,7 +62,7 @@ Commit source changes before building the release archive:
 
 ```sh
 ./tools/miller/build-rpm.sh
-./tools/miller/install-default.sh build-rpm/RPMS/x86_64/nautilus-50.4-1.miller1.fc44.x86_64.rpm
+./tools/miller/install-default.sh build-rpm/RPMS/x86_64/nautilus-50.4-1.miller2.fc44.x86_64.rpm
 ```
 
 The RPM follows Fedora's Nautilus package layout, including its extension library, desktop entry, D-Bus contracts, and terminal patch. The installer validates the complete package set and host architecture, preserves the original settings and verified stock RPMs under `$XDG_STATE_HOME/nautilus-miller` (normally `~/.local/state/nautilus-miller`), requests sudo authentication, and closes Nautilus through its normal Quit action. It waits for background work; a refused drain prevents the package transaction. It then runs `sudo dnf --repo=fedora --repo=updates install <explicit matching RPM paths>` (including devel only if installed), selects Columns, launches, and verifies the installed packages, executable inode, canonical service owners, handler, and preference before recording success.
@@ -88,7 +88,7 @@ python3 tools/miller/with-test-session.py -- python3 tools/miller/with-test-home
 python3 test/miller/test-preview-io.py
 ```
 
-These are focused checks. GUI tests use a private bus/compositor, disposable XDG directories and a mounted disposable Home while leaving `HOME` unchanged. Do not run legacy filesystem tests against the operator’s Home. See [input/testing procedures](docs/miller/input-testing.md) and the [acceptance ledger](docs/miller/acceptance.md) for full regression evidence and remaining gates. Operation tests now include genuine clipboard input, an independent GTK source, native dialogs/conflicts, and real Trash/restore in a normal application child. Actual drag-and-drop, extension/OpenPGP and release acceptance remain required; see [operation evidence](docs/miller/operations-verification.md).
+These are focused checks. GUI tests use a private bus/compositor, disposable XDG directories and a mounted disposable Home while leaving `HOME` unchanged. Do not run legacy filesystem tests against the operator’s Home. See [input/testing procedures](docs/miller/input-testing.md) and the [acceptance ledger](docs/miller/acceptance.md) for full regression evidence and remaining gates. Operation tests now include genuine clipboard input, an independent GTK source, native dialogs/conflicts, and real Trash/restore in a normal application child. Both profiles have actual native drag/operation regression evidence; extension/OpenPGP runtime compatibility remains unverified. Package and deployment readiness are recorded separately in the acceptance ledger; see [operation evidence](docs/miller/operations-verification.md).
 
 Historical runs recorded a `test-portal-file-chooser` render/response timeout, also reproduced with the unchanged upstream baseline. Fresh isolated regression suites pass that smoke test; the original failure remains in [verification](docs/miller/verification.md), and release portal acceptance is still tracked separately.
 
