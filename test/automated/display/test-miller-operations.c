@@ -19,6 +19,7 @@
 #include "nautilus-rename-file-popover.h"
 #include "nautilus-progress-info.h"
 #include "nautilus-progress-info-manager.h"
+#include "nautilus-progress-info-widget.h"
 #include "nautilus-resources.h"
 #include "nautilus-tag-manager.h"
 #include "nautilus-toolbar.h"
@@ -1214,12 +1215,436 @@ test_new_folder_after_tab_switch (OperationFixture *f, gconstpointer unused)
     operations_assert_focus (f, operations_view_for_directory (f, f->sibling));
 }
 
+/* These acceptance cases catch wrong-destination routing or bypassing native
+ * conflict policy: the original bytes must survive Skip/Cancel/Keep Both,
+ * and only Replace may overwrite the captured destination. */
+static void
+operations_press_button (GtkWidget *dialog, const char *label)
+{
+    GtkWidget *text = operations_find_label (dialog, label);
+    g_assert_nonnull (text);
+    GtkWidget *button = gtk_widget_get_ancestor (text, GTK_TYPE_BUTTON);
+    g_assert_nonnull (button);
+    gint64 deadline = g_get_monotonic_time () + 8 * G_TIME_SPAN_SECOND;
+    while (!gtk_widget_is_sensitive (button))
+    {
+        g_assert_cmpint (g_get_monotonic_time (), <, deadline); operations_pump (10);
+    }
+    g_assert_true (gtk_widget_grab_focus (button));
+    operations_key (GDK_KEY_Return);
+}
+
+static void
+test_native_conflict (OperationFixture *f, gconstpointer unused)
+{
+    const char *test = g_test_get_path ();
+    gboolean keep = strstr (test, "keep-both") != NULL;
+    gboolean skip = strstr (test, "skip") != NULL;
+    gboolean cancel = strstr (test, "cancel") != NULL;
+    operations_copy_source (f, FALSE);
+    g_autofree char *name = g_file_get_basename (f->source_file);
+    g_autoptr (GFile) destination = g_file_get_child (f->parent, name);
+    operations_owned (f, destination);
+    g_assert_true (g_file_replace_contents (destination, "original bytes", 14, NULL, FALSE, 0, NULL, NULL, NULL));
+    NautilusFilesView *parent = operations_open_parent (f);
+    guint history = g_list_length (nautilus_window_slot_get_back_history (f->slot));
+    operations_chord (GDK_KEY_v, FALSE);
+    g_autoptr (GtkWidget) dialog = operations_wait_window (f, NAUTILUS_TYPE_FILE_CONFLICT_DIALOG);
+    g_assert_cmpuint (f->jobs->len, ==, 1);
+    NautilusProgressInfo *job = f->jobs->pdata[0];
+    g_assert_true (nautilus_progress_info_get_is_started (job));
+    g_assert_false (nautilus_progress_info_get_is_finished (job));
+    if (keep)
+    {
+        GtkWidget *expander = operations_find_type (dialog, GTK_TYPE_EXPANDER);
+        g_assert_nonnull (expander);
+        g_assert_true (gtk_widget_grab_focus (expander));
+        operations_key (GDK_KEY_space);
+        g_assert_true (gtk_expander_get_expanded (GTK_EXPANDER (expander)));
+        GtkWidget *entry = operations_find_type (expander, GTK_TYPE_ENTRY);
+        g_assert_nonnull (entry);
+        g_assert_true (gtk_widget_grab_focus (entry));
+        operations_chord (GDK_KEY_a, FALSE); operations_type ("kept.txt");
+        operations_press_button (dialog, "Rename");
+    }
+    else { operations_press_button (dialog, cancel ? "Cancel" : skip ? "Skip" : "Replace"); }
+    operations_settle (f);
+    g_assert_true (nautilus_progress_info_get_is_finished (job));
+    g_assert_cmpint (nautilus_progress_info_get_is_cancelled (job), ==, cancel);
+    ConflictResponse expected = keep ? CONFLICT_RESPONSE_RENAME : skip ? CONFLICT_RESPONSE_SKIP :
+                                cancel ? CONFLICT_RESPONSE_CANCEL : CONFLICT_RESPONSE_REPLACE;
+    g_assert_cmpint (nautilus_file_conflict_dialog_get_response (NAUTILUS_FILE_CONFLICT_DIALOG (dialog)), ==, expected);
+    operations_assert_bytes (f, destination, keep || skip || cancel ? "original bytes" : payload);
+    g_autoptr (GFile) renamed = g_file_get_child (f->parent, "kept.txt");
+    if (keep) { operations_wait_file (f, parent, renamed); operations_assert_bytes (f, renamed, payload); }
+    else { g_assert_false (g_file_query_exists (renamed, NULL)); }
+    operations_assert_bytes (f, f->source_file, payload);
+    operations_assert_sentinels (f);
+    g_assert_cmpuint (g_list_length (nautilus_window_slot_get_back_history (f->slot)), ==, history);
+    operations_assert_focus (f, parent);
+}
+
+static void
+test_directory_merge (OperationFixture *f, gconstpointer unused)
+{
+    g_autoptr (GFile) source = g_file_get_child (f->source_dir, "merge");
+    g_autoptr (GFile) destination = g_file_get_child (f->parent, "merge");
+    operations_owned (f, source); operations_owned (f, destination);
+    g_assert_true (g_file_make_directory (source, NULL, NULL));
+    g_assert_true (g_file_make_directory (destination, NULL, NULL));
+    g_autoptr (GFile) incoming = g_file_get_child (source, "incoming.txt");
+    g_autoptr (GFile) existing = g_file_get_child (destination, "existing.txt");
+    g_assert_true (g_file_replace_contents (incoming, payload, strlen (payload), NULL, FALSE, 0, NULL, NULL, NULL));
+    g_assert_true (g_file_replace_contents (existing, "retained", 8, NULL, FALSE, 0, NULL, NULL, NULL));
+    operations_select (f, operations_view_for_directory (f, f->source_dir), source);
+    operations_chord (GDK_KEY_c, FALSE);
+    NautilusFilesView *parent = operations_open_parent (f);
+    operations_chord (GDK_KEY_v, FALSE);
+    g_autoptr (GtkWidget) dialog = operations_wait_window (f, NAUTILUS_TYPE_FILE_CONFLICT_DIALOG);
+    operations_press_button (dialog, "Merge");
+    operations_settle (f);
+    g_autoptr (GFile) copied = g_file_get_child (destination, "incoming.txt");
+    operations_assert_bytes (f, copied, payload);
+    operations_assert_bytes (f, incoming, payload);
+    operations_assert_bytes (f, existing, "retained");
+    operations_assert_sentinels (f);
+    operations_assert_focus (f, parent);
+}
+
+static AdwDialog *
+operations_wait_alert (OperationFixture *f)
+{
+    gint64 deadline = g_get_monotonic_time () + 10 * G_TIME_SPAN_SECOND;
+    for (;;)
+    {
+        AdwDialog *dialog = adw_application_window_get_visible_dialog (ADW_APPLICATION_WINDOW (f->window));
+        if (ADW_IS_ALERT_DIALOG (dialog)) { return g_object_ref (dialog); }
+        g_assert_cmpint (g_get_monotonic_time (), <, deadline); operations_pump (10);
+    }
+}
+
+/* Catch swallowed native permission errors, retargeted batches, or rollback
+ * claims that erase a successfully copied member after another member fails. */
+static void
+test_native_permission_error (OperationFixture *f, gconstpointer unused)
+{
+    gboolean partial = g_str_has_suffix (g_test_get_path (), "partial-failure");
+    g_autoptr (GFile) good = g_file_get_child (f->source_dir, "readable.txt");
+    operations_owned (f, good);
+    if (partial)
+    {
+        g_assert_true (g_file_replace_contents (good, "readable member", 15, NULL, FALSE, 0, NULL, NULL, NULL));
+    }
+    operations_owned (f, f->source_file);
+    g_assert_true (g_file_set_attribute_uint32 (f->source_file, G_FILE_ATTRIBUTE_UNIX_MODE,
+                                               0000, G_FILE_QUERY_INFO_NOFOLLOW_SYMLINKS, NULL, NULL));
+    g_autoptr (GError) error = NULL;
+    GFileInputStream *unreadable = g_file_read (f->source_file, NULL, &error);
+    g_assert_null (unreadable); g_assert_error (error, G_IO_ERROR, G_IO_ERROR_PERMISSION_DENIED);
+    g_clear_error (&error);
+    NautilusFilesView *source = operations_view_for_directory (f, f->source_dir);
+    operations_select (f, source, f->source_file);
+    if (partial)
+    {
+        operations_select (f, source, good);
+        g_autoptr (NautilusFile) first = nautilus_file_get (good);
+        g_autoptr (NautilusFile) second = nautilus_file_get (f->source_file);
+        GList tail = { .data = second };
+        GList head = { .data = first, .next = &tail }; tail.prev = &head;
+        nautilus_files_view_set_selection (source, &head, FALSE);
+        operations_settle (f);
+    }
+    operations_chord (GDK_KEY_c, FALSE);
+    NautilusFilesView *parent = operations_open_parent (f);
+    operations_chord (GDK_KEY_v, FALSE);
+    g_autoptr (AdwDialog) dialog = operations_wait_alert (f);
+    g_test_message ("Native error heading=%s body=%s", adw_alert_dialog_get_heading (ADW_ALERT_DIALOG (dialog)),
+                    adw_alert_dialog_get_body (ADW_ALERT_DIALOG (dialog)));
+    GtkWidget *details = adw_alert_dialog_get_extra_child (ADW_ALERT_DIALOG (dialog));
+    g_assert_true (GTK_IS_LABEL (details));
+    g_test_message ("Native error details=%s", gtk_label_get_text (GTK_LABEL (details)));
+    g_assert_nonnull (strstr (gtk_label_get_text (GTK_LABEL (details)), "Permission denied"));
+    g_assert_cmpuint (f->jobs->len, ==, 1);
+    g_assert_false (nautilus_progress_info_get_is_finished (f->jobs->pdata[0]));
+    operations_press_button (GTK_WIDGET (dialog), partial ? "Skip" : "Cancel");
+    operations_settle (f);
+    g_assert_true (nautilus_progress_info_get_is_finished (f->jobs->pdata[0]));
+    g_assert_cmpint (nautilus_progress_info_get_is_cancelled (f->jobs->pdata[0]), ==, !partial);
+    /* Restore owned permissions before reading or native fixture cleanup. */
+    g_assert_true (g_file_set_attribute_uint32 (f->source_file, G_FILE_ATTRIBUTE_UNIX_MODE,
+                                               0600, G_FILE_QUERY_INFO_NOFOLLOW_SYMLINKS, NULL, NULL));
+    operations_assert_bytes (f, f->source_file, payload);
+    g_autofree char *name = g_file_get_basename (f->source_file);
+    g_autoptr (GFile) failed = g_file_get_child (f->parent, name);
+    g_assert_false (g_file_query_exists (failed, NULL));
+    if (partial)
+    {
+        g_autoptr (GFile) copied = g_file_get_child (f->parent, "readable.txt");
+        operations_wait_file (f, parent, copied);
+        operations_assert_bytes (f, copied, "readable member");
+        operations_assert_bytes (f, good, "readable member");
+    }
+    operations_assert_sentinels (f);
+    operations_assert_focus (f, parent);
+}
+
+static void
+test_progress_cancel (OperationFixture *f, gconstpointer unused)
+{
+    operations_copy_source (f, FALSE);
+    g_autofree char *name = g_file_get_basename (f->source_file);
+    g_autoptr (GFile) destination = g_file_get_child (f->parent, name);
+    operations_owned (f, destination);
+    g_assert_true (g_file_replace_contents (destination, "retained", 8, NULL, FALSE, 0, NULL, NULL, NULL));
+    NautilusFilesView *parent = operations_open_parent (f);
+    operations_chord (GDK_KEY_v, FALSE);
+    g_autoptr (GtkWidget) conflict = operations_wait_window (f, NAUTILUS_TYPE_FILE_CONFLICT_DIALOG);
+    g_assert_cmpuint (f->jobs->len, ==, 1);
+    NautilusProgressInfo *job = f->jobs->pdata[0];
+    g_assert_true (nautilus_progress_info_get_is_started (job));
+    g_assert_false (nautilus_progress_info_get_is_finished (job));
+    /* Display the existing native progress widget for this real paused job.
+     * The extra test host keeps Cancel reachable while its conflict is modal;
+     * this is widget/cancellation acceptance, not toolbar-popover coverage. */
+    GtkWidget *host = gtk_window_new ();
+    gtk_window_set_transient_for (GTK_WINDOW (host), GTK_WINDOW (conflict));
+    GtkWidget *row = nautilus_progress_info_widget_new (job);
+    gtk_window_set_child (GTK_WINDOW (host), row);
+    gtk_window_present (GTK_WINDOW (host));
+    gint64 deadline = g_get_monotonic_time () + 8 * G_TIME_SPAN_SECOND;
+    while (!gtk_window_is_active (GTK_WINDOW (host)))
+    {
+        g_assert_cmpint (g_get_monotonic_time (), <, deadline); operations_pump (10);
+    }
+    GtkWidget *button = operations_find_type (row, GTK_TYPE_BUTTON);
+    g_assert_nonnull (button); g_assert_true (gtk_widget_grab_focus (button));
+    operations_key (GDK_KEY_Return);
+    g_assert_true (nautilus_progress_info_get_is_cancelled (job));
+    /* Cancelling the progress token is not a completed worker. Dismiss the
+     * outstanding native question through its normal response to release it. */
+    g_assert_false (nautilus_progress_info_get_is_finished (job));
+    gtk_window_destroy (GTK_WINDOW (host)); operations_pump (80);
+    operations_press_button (conflict, "Cancel");
+    operations_settle (f);
+    g_assert_true (nautilus_progress_info_get_is_finished (job));
+    operations_assert_bytes (f, destination, "retained");
+    operations_assert_bytes (f, f->source_file, payload);
+    operations_assert_sentinels (f); operations_assert_focus (f, parent);
+}
+
+static void
+operations_shift_delete (void)
+{
+    g_autoptr (GError) error = NULL;
+    g_assert_true (miller_test_input_key (input, GDK_KEY_Shift_L, TRUE, &error));
+    operations_key (GDK_KEY_Delete);
+    g_assert_true (miller_test_input_key (input, GDK_KEY_Shift_L, FALSE, &error));
+    g_assert_no_error (error); operations_pump (60);
+}
+
+static void
+operations_assert_private_home (void)
+{
+    const char *masked = g_getenv ("MILLER_TEST_HOME");
+    g_assert_nonnull (masked);
+    struct stat home, backing, data;
+    struct statvfs host;
+    g_assert_cmpint (stat (g_get_home_dir (), &home), ==, 0);
+    g_assert_cmpint (stat (masked, &backing), ==, 0);
+    g_assert_cmpuint (home.st_dev, ==, backing.st_dev);
+    g_assert_cmpuint (home.st_ino, ==, backing.st_ino);
+    g_assert_cmpint (statvfs ("/", &host), ==, 0);
+    g_assert_true ((host.f_flag & ST_RDONLY) != 0);
+    g_autoptr (GFile) runtime = g_file_new_for_path (g_get_user_runtime_dir ());
+    g_autoptr (GFile) private = g_file_get_parent (runtime);
+    g_autoptr (GFile) expected_data = g_file_get_child (private, "data");
+    g_autoptr (GFile) actual_data = g_file_new_for_path (g_get_user_data_dir ());
+    g_assert_true (g_file_equal (actual_data, expected_data));
+    g_assert_cmpint (lstat (g_get_user_data_dir (), &data), ==, 0);
+    g_assert_true (S_ISDIR (data.st_mode));
+    g_assert_cmpuint (data.st_uid, ==, geteuid ());
+    g_assert_cmpuint (data.st_mode & 0777, ==, 0700);
+}
+
+static void
+operations_assert_private_trash_bytes (GFile *file)
+{
+    operations_assert_private_home ();
+    g_autofree char *path = g_build_filename (g_get_user_data_dir (), "Trash", NULL);
+    g_autoptr (GFile) trash = g_file_new_for_path (path);
+    g_assert_true (g_file_has_prefix (file, trash));
+    g_autofree char *contents = NULL;
+    gsize length;
+    g_assert_true (g_file_load_contents (file, NULL, &contents, &length, NULL, NULL));
+    g_assert_cmpmem (contents, length, payload, strlen (payload));
+}
+
+/* Run before g_test_init: stock Nautilus deliberately bypasses Trash and
+ * delete confirmations in GLib tests. This normal app child exercises the
+ * actual policy, with the same owned compositor/Home and native controls. */
+static int
+operations_deletion_child_main (const char *kind)
+{
+    g_assert_false (g_test_initialized ());
+    g_setenv ("GDK_DEBUG", "no-portals", TRUE);
+    g_autoptr (GError) error = NULL;
+    input = miller_test_input_new (&error); g_assert_no_error (error);
+    operations_assert_private_home ();
+    nautilus_register_resource (); nautilus_global_preferences_init (); nautilus_ensure_extension_points ();
+    g_autoptr (NautilusTagManager) tags = nautilus_tag_manager_new_dummy ();
+    test_init_config_dir ();
+    g_autoptr (NautilusApplication) app = nautilus_application_new ();
+    g_application_set_flags (G_APPLICATION (app), g_application_get_flags (G_APPLICATION (app)) | G_APPLICATION_NON_UNIQUE);
+    g_assert_true (g_application_register (G_APPLICATION (app), NULL, NULL));
+    GMainContext *context = g_main_context_default ();
+    g_assert_true (g_main_context_acquire (context));
+    OperationFixture fixture = { 0 }; OperationFixture *f = &fixture;
+    operations_setup (f, GUINT_TO_POINTER (NAUTILUS_VIEW_MILLER_ID));
+    NautilusFilesView *source = operations_view_for_directory (f, f->source_dir);
+    operations_select (f, source, f->source_file); operations_assert_focus (f, source);
+    if (g_str_equal (kind, "permanent-delete-confirmation"))
+    {
+        operations_shift_delete ();
+        g_autoptr (AdwDialog) cancel = operations_wait_alert (f);
+        g_assert_nonnull (strstr (adw_alert_dialog_get_heading (ADW_ALERT_DIALOG (cancel)), "Permanently Delete"));
+        operations_assert_bytes (f, f->source_file, payload);
+        operations_press_button (GTK_WIDGET (cancel), "Cancel"); operations_settle (f);
+        operations_assert_bytes (f, f->source_file, payload);
+        operations_select (f, source, f->source_file);
+        operations_shift_delete ();
+        g_autoptr (AdwDialog) accept = operations_wait_alert (f);
+        operations_assert_bytes (f, f->source_file, payload);
+        operations_press_button (GTK_WIDGET (accept), "Delete"); operations_settle (f);
+        g_assert_false (g_file_query_exists (f->source_file, NULL));
+        operations_assert_sentinels (f);
+    }
+    else if (g_str_equal (kind, "trash-unavailable"))
+    {
+        /* Make only this proven-private Trash unwritable. Source deletion is
+         * still possible, so the native failure must ask rather than erase. */
+        g_autofree char *files_path = g_build_filename (g_get_user_data_dir (), "Trash", "files", NULL);
+        g_autofree char *info_path = g_build_filename (g_get_user_data_dir (), "Trash", "info", NULL);
+        g_assert_cmpint (g_mkdir_with_parents (files_path, 0700), ==, 0);
+        g_assert_cmpint (g_mkdir_with_parents (info_path, 0700), ==, 0);
+        g_autoptr (GFile) files = g_file_new_for_path (files_path);
+        g_autoptr (GFile) info = g_file_new_for_path (info_path);
+        g_assert_true (g_file_set_attribute_uint32 (files, G_FILE_ATTRIBUTE_UNIX_MODE, 0500,
+                                                   G_FILE_QUERY_INFO_NOFOLLOW_SYMLINKS, NULL, NULL));
+        g_assert_true (g_file_set_attribute_uint32 (info, G_FILE_ATTRIBUTE_UNIX_MODE, 0500,
+                                                   G_FILE_QUERY_INFO_NOFOLLOW_SYMLINKS, NULL, NULL));
+        operations_key (GDK_KEY_Delete);
+        g_autoptr (AdwDialog) question = operations_wait_alert (f);
+        g_assert_nonnull (strstr (adw_alert_dialog_get_heading (ADW_ALERT_DIALOG (question)), "can’t be put in the trash"));
+        GtkWidget *details = adw_alert_dialog_get_extra_child (ADW_ALERT_DIALOG (question));
+        g_assert_true (GTK_IS_LABEL (details));
+        g_assert_nonnull (strstr (gtk_label_get_text (GTK_LABEL (details)), "Permission denied"));
+        operations_assert_bytes (f, f->source_file, payload);
+        operations_press_button (GTK_WIDGET (question), "Cancel"); operations_settle (f);
+        g_assert_true (g_file_set_attribute_uint32 (files, G_FILE_ATTRIBUTE_UNIX_MODE, 0700,
+                                                   G_FILE_QUERY_INFO_NOFOLLOW_SYMLINKS, NULL, NULL));
+        g_assert_true (g_file_set_attribute_uint32 (info, G_FILE_ATTRIBUTE_UNIX_MODE, 0700,
+                                                   G_FILE_QUERY_INFO_NOFOLLOW_SYMLINKS, NULL, NULL));
+        operations_assert_bytes (f, f->source_file, payload);
+        operations_assert_sentinels (f);
+    }
+    else
+    {
+        g_assert_cmpstr (kind, ==, "trash-undo-restore");
+        g_autofree char *name = g_file_get_basename (f->source_file);
+        g_autofree char *trash_path = g_build_filename (g_get_user_data_dir (), "Trash", "files", name, NULL);
+        g_autoptr (GFile) local_trashed = g_file_new_for_path (trash_path);
+        g_assert_false (g_file_query_exists (local_trashed, NULL));
+        operations_key (GDK_KEY_Delete); operations_settle (f);
+        /* No silent permanent fallback: original removal alone is not proof. */
+        g_assert_false (g_file_query_exists (f->source_file, NULL));
+        operations_assert_private_trash_bytes (local_trashed);
+        g_assert_cmpint (nautilus_file_undo_manager_get_state (), ==, NAUTILUS_FILE_UNDO_MANAGER_STATE_UNDO);
+        operations_chord (GDK_KEY_z, FALSE); operations_settle (f);
+        operations_wait_file (f, source, f->source_file);
+        operations_assert_bytes (f, f->source_file, payload);
+        g_assert_false (g_file_query_exists (local_trashed, NULL));
+        operations_select (f, source, f->source_file);
+        operations_key (GDK_KEY_Delete); operations_settle (f);
+        operations_assert_private_trash_bytes (local_trashed);
+        g_autoptr (GFile) trash = g_file_new_for_uri ("trash:///");
+        nautilus_window_open_location_full (NAUTILUS_WINDOW (f->window), trash, 0, NULL);
+        operations_settle (f);
+        NautilusFilesView *view = nautilus_window_slot_get_current_view (f->slot);
+        g_autoptr (GFile) trashed = g_file_get_child (trash, name);
+        g_autoptr (GFileInfo) info = g_file_query_info (trashed, G_FILE_ATTRIBUTE_TRASH_ORIG_PATH,
+            G_FILE_QUERY_INFO_NONE, NULL, &error);
+        g_assert_no_error (error); g_assert_nonnull (info);
+        g_autofree char *original_path = g_file_get_path (f->source_file);
+        g_assert_cmpstr (g_file_info_get_attribute_byte_string (info, G_FILE_ATTRIBUTE_TRASH_ORIG_PATH), ==, original_path);
+        g_autoptr (NautilusFile) file = nautilus_file_get (trashed);
+        gint64 deadline = g_get_monotonic_time () + 15 * G_TIME_SPAN_SECOND;
+        while (nautilus_view_model_get_item_for_file (nautilus_files_view_get_private_model (view), file) == NULL)
+        {
+            g_assert_cmpint (g_get_monotonic_time (), <, deadline); operations_pump (10);
+        }
+        GList selection = { .data = file };
+        nautilus_files_view_set_selection (view, &selection, FALSE);
+        gtk_widget_grab_focus (GTK_WIDGET (view)); operations_settle (f);
+        operations_key (GDK_KEY_Menu); operations_activate_menu_label (view, "Restore From Trash");
+        operations_settle (f);
+        operations_assert_bytes (f, f->source_file, payload);
+        g_assert_false (g_file_query_exists (local_trashed, NULL));
+        operations_assert_sentinels (f);
+    }
+    g_assert_cmpuint (f->jobs->len, >=, g_str_equal (kind, "trash-unavailable") ? 1 : 2);
+    for (guint i = 0; i < f->jobs->len; i++)
+    {
+        g_assert_true (nautilus_progress_info_get_is_finished (f->jobs->pdata[i]));
+    }
+    operations_teardown (f, NULL);
+    g_main_context_release (context); g_clear_pointer (&input, miller_test_input_free);
+    g_print ("Native deletion acceptance: %s PASS\n", kind);
+    return 0;
+}
+
+typedef struct { gboolean done, success; GError *error; } OperationChildWait;
+
+static void
+operations_child_finished (GObject *source, GAsyncResult *result, gpointer data)
+{
+    OperationChildWait *wait = data;
+    wait->success = g_subprocess_wait_check_finish (G_SUBPROCESS (source), result, &wait->error);
+    wait->done = TRUE;
+}
+
+static void
+test_native_deletion_child (OperationFixture *f, gconstpointer unused)
+{
+    const char *kind = strrchr (g_test_get_path (), '/') + 1;
+    g_autofree char *executable = g_file_read_link ("/proc/self/exe", NULL);
+    g_assert_nonnull (executable);
+    g_autoptr (GError) error = NULL;
+    g_autoptr (GSubprocess) child = g_subprocess_new (G_SUBPROCESS_FLAGS_NONE, &error,
+        executable, "--native-deletion", kind, NULL);
+    g_assert_no_error (error); g_assert_nonnull (child);
+    OperationChildWait wait = { 0 };
+    g_subprocess_wait_check_async (child, NULL, operations_child_finished, &wait);
+    gint64 deadline = g_get_monotonic_time () + 45 * G_TIME_SPAN_SECOND;
+    while (!wait.done && g_get_monotonic_time () < deadline) { operations_pump (10); }
+    if (!wait.done)
+    {
+        g_subprocess_force_exit (child);
+        while (!wait.done) { operations_pump (10); }
+    }
+    g_assert_no_error (wait.error); g_assert_true (wait.success);
+    operations_assert_bytes (f, f->source_file, payload); operations_assert_sentinels (f);
+}
+
 int
 main (int argc, char **argv)
 {
     if (argc == 4 && g_str_equal (argv[1], "--clipboard-source"))
     {
         return clipboard_child_main (argv[2], argv[3]);
+    }
+    if (argc == 3 && g_str_equal (argv[1], "--native-deletion"))
+    {
+        return operations_deletion_child_main (argv[2]);
     }
     g_test_init (&argc, &argv, NULL);
     if (g_getenv ("MILLER_TEST_SESSION") == NULL || g_getenv ("MILLER_TEST_HOME") == NULL)
@@ -1268,6 +1693,21 @@ main (int argc, char **argv)
     g_test_add ("/miller/operations/operation-tab-switch-grid", OperationFixture,
         GUINT_TO_POINTER (NAUTILUS_VIEW_GRID_ID), operations_setup, test_operation_tab_switch, operations_teardown);
     COLUMN_CASE ("operation-tab-switch-entry", test_operation_tab_switch);
+    COLUMN_CASE ("conflict-replace", test_native_conflict);
+    COLUMN_CASE ("conflict-keep-both", test_native_conflict);
+    COLUMN_CASE ("conflict-skip", test_native_conflict);
+    COLUMN_CASE ("conflict-cancel", test_native_conflict);
+    COLUMN_CASE ("directory-merge", test_directory_merge);
+    g_test_add ("/miller/operations/conflict-replace-list", OperationFixture,
+        GUINT_TO_POINTER (NAUTILUS_VIEW_LIST_ID), operations_setup, test_native_conflict, operations_teardown);
+    g_test_add ("/miller/operations/conflict-replace-grid", OperationFixture,
+        GUINT_TO_POINTER (NAUTILUS_VIEW_GRID_ID), operations_setup, test_native_conflict, operations_teardown);
+    COLUMN_CASE ("permission-denied", test_native_permission_error);
+    COLUMN_CASE ("partial-failure", test_native_permission_error);
+    COLUMN_CASE ("progress-cancel", test_progress_cancel);
+    COLUMN_CASE ("permanent-delete-confirmation", test_native_deletion_child);
+    COLUMN_CASE ("trash-undo-restore", test_native_deletion_child);
+    COLUMN_CASE ("trash-unavailable", test_native_deletion_child);
     /* A real GMainLoop keeps its context owned while running. Match that
      * contract while these tests manually iterate/pump GTK: native operation
      * UI dispatch must never acquire the default context on a worker. */
