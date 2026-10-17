@@ -41,7 +41,7 @@ The focused column owns ordinary file actions. Paste, New Folder, New Document a
 | Compress / Extract | Native context menu and destination chooser |
 | Open directory in Console | Ctrl+Period when the Console provider is available |
 
-Conflict, error, permission, cancellation and Trash availability follow Nautilus's native behavior. The current host lacks Console (`kgx`); its private provider contract has development coverage. Extension/OpenPGP and drag-and-drop acceptance remain open. See [operation evidence and limitations](docs/miller/operations-verification.md) for actual tested workflows; these development changes have not replaced the installed RPM.
+Conflict, error, permission, cancellation and Trash availability follow Nautilus's native behavior. On the tested Wayland session, Ctrl+Shift drag negotiates Move; the protocol has no Link action. Use the native Create Link commands above for links. The current host lacks Console (`kgx`); its private provider contract has development coverage. Extension/OpenPGP and drag-and-drop acceptance remain open. See [operation evidence and limitations](docs/miller/operations-verification.md) for actual tested workflows; these development changes have not replaced the installed RPM.
 
 ## Build and run on Fedora 44
 

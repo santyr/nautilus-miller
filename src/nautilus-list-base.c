@@ -71,6 +71,7 @@ G_DEFINE_ABSTRACT_TYPE_WITH_PRIVATE (NautilusListBase, nautilus_list_base, ADW_T
 enum
 {
     ACTIVATE_SELECTION,
+    DRAG_BEGIN,
     PERFORM_DROP,
     POPUP_BACKGROUND_CONTEXT_MENU,
     POPUP_SELECTION_CONTEXT_MENU,
@@ -469,6 +470,22 @@ on_item_drag_prepare (GtkDragSource *source,
     gtk_drag_source_set_icon (source, paintable, 0, 0);
 
     return gdk_content_provider_new_typed (GDK_TYPE_FILE_LIST, file_list);
+}
+
+static void
+on_item_drag_begin (GtkDragSource *source,
+                    GdkDrag       *drag,
+                    gpointer       user_data)
+{
+    NautilusViewCell *cell = user_data;
+    NautilusListBase *self = nautilus_view_cell_get_view (cell);
+
+    if (self != NULL)
+    {
+        /* Publish the native drag before queued selection notifications can
+         * navigate a multi-directory host away from its drop destination. */
+        g_signal_emit (self, signals[DRAG_BEGIN], 0, drag);
+    }
 }
 
 static gboolean
@@ -893,6 +910,7 @@ setup_cell_common (GObject          *listitem,
     gtk_widget_add_controller (GTK_WIDGET (cell), controller);
     gtk_event_controller_set_propagation_phase (controller, GTK_PHASE_CAPTURE);
     g_signal_connect (controller, "prepare", G_CALLBACK (on_item_drag_prepare), cell);
+    g_signal_connect (controller, "drag-begin", G_CALLBACK (on_item_drag_begin), cell);
 
     /* TODO: Implement GDK_ACTION_ASK */
     drop_target = gtk_drop_target_new (G_TYPE_INVALID, GDK_ACTION_ALL);
@@ -1298,6 +1316,11 @@ nautilus_list_base_class_init (NautilusListBaseClass *klass)
                                                 g_cclosure_marshal_VOID__FLAGS,
                                                 G_TYPE_NONE, 1,
                                                 NAUTILUS_TYPE_OPEN_FLAGS);
+    signals[DRAG_BEGIN] = g_signal_new ("drag-begin",
+                                       G_TYPE_FROM_CLASS (klass),
+                                       G_SIGNAL_RUN_LAST, 0,
+                                       NULL, NULL, NULL,
+                                       G_TYPE_NONE, 1, GDK_TYPE_DRAG);
     signals[PERFORM_DROP] = g_signal_new ("perform-drop",
                                           G_TYPE_FROM_CLASS (klass),
                                           G_SIGNAL_RUN_LAST,

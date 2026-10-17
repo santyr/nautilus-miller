@@ -1,5 +1,6 @@
 tests = {
-  'test-miller-operations': {'is_parallel': false, 'env': ['GTK_A11Y=test']},
+  'test-miller-dnd': {'is_parallel': false, 'env': ['GTK_A11Y=test'], 'sources': files('../miller-test-operations.c')},
+  'test-miller-operations': {'is_parallel': false, 'env': ['GTK_A11Y=test'], 'sources': files('../miller-test-operations.c')},
   'test-miller-view': {'is_parallel': false, 'env': ['GTK_A11Y=test']},
   'test-miller-state': {'is_parallel': false, 'env': ['GTK_A11Y=test']},
   'test-miller-preview-ui': {'is_parallel': false, 'env': ['GTK_A11Y=test']},
@@ -25,7 +26,7 @@ tests = {
 foreach test_name, extra_args : tests
   source = test_name + '.c'
   suite = ['display'] + extra_args.get('suite', [])
-  test_exe = executable(test_name, source, dependencies: [libnautilus_dep, libtestutils_dep])
+  test_exe = executable(test_name, [source] + extra_args.get('sources', []), dependencies: [libnautilus_dep, libtestutils_dep])
   args = []
   exe = []
   is_parallel = extra_args.get('is_parallel', true)

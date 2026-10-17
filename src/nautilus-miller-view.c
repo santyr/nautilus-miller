@@ -54,6 +54,7 @@ struct _NautilusMillerView
     GPtrArray *columns;
     NautilusFilesView *active_view; /* borrowed from columns */
     GFile *user_location;
+    GdkDrag *file_drag; /* Owned only through native drag completion. */
     gboolean active;
     gboolean reconciling;
     guint scroll_tick;
@@ -382,7 +383,7 @@ selection_idle (gpointer data)
     MillerColumn *column = data;
     NautilusMillerView *self = column->owner;
     column->selection_idle = 0;
-    if (self->reconciling || nautilus_files_view_is_selection_auto (column->view) ||
+    if (self->file_drag != NULL || self->reconciling || nautilus_files_view_is_selection_auto (column->view) ||
         column->selection_action_generation != self->action_generation)
     {
         return G_SOURCE_REMOVE;
@@ -476,6 +477,38 @@ focus_leave (GtkEventControllerFocus *controller, MillerColumn *column)
 {
     nautilus_miller_typeahead_reset (column->typeahead);
     if (!column->owner->restoring) { column->owner->restore_focus = FALSE; }
+}
+
+static void
+clear_file_drag (NautilusMillerView *self)
+{
+    if (self->file_drag != NULL)
+    {
+        g_signal_handlers_disconnect_by_data (self->file_drag, self);
+        g_clear_object (&self->file_drag);
+    }
+}
+
+static void
+file_drag_finished (GdkDrag *drag, NautilusMillerView *self)
+{
+    if (self->file_drag == drag) { clear_file_drag (self); }
+}
+
+static void
+file_drag_cancelled (GdkDrag *drag, GdkDragCancelReason reason, NautilusMillerView *self)
+{
+    file_drag_finished (drag, self);
+}
+
+static void
+file_drag_started (NautilusListBase *list_base, GdkDrag *drag, MillerColumn *column)
+{
+    NautilusMillerView *self = column->owner;
+    clear_file_drag (self);
+    self->file_drag = g_object_ref (drag);
+    g_signal_connect_object (drag, "dnd-finished", G_CALLBACK (file_drag_finished), self, 0);
+    g_signal_connect_object (drag, "cancel", G_CALLBACK (file_drag_cancelled), self, 0);
 }
 
 static void
@@ -686,6 +719,7 @@ column_free (gpointer data)
     g_clear_object (&column->typeahead);
     g_clear_handle_id (&column->selection_idle, g_source_remove);
     g_signal_handlers_disconnect_by_data (column->view, column);
+    g_signal_handlers_disconnect_by_data (nautilus_files_view_get_private_list_base (column->view), column);
     g_signal_handlers_disconnect_by_data (nautilus_files_view_get_private_model (column->view), column);
     disconnect_column_controllers (GTK_WIDGET (column->view), column);
     disconnect_column_controllers (column->grip, column);
@@ -821,6 +855,8 @@ column_new (NautilusMillerView *self, GFile *location)
     g_signal_connect (nautilus_files_view_get_private_model (column->view), "selection-changed",
                       G_CALLBACK (selection_model_changed), column);
     g_signal_connect (column->view, "column-activate-directory", G_CALLBACK (activate_directory), column);
+    g_signal_connect (nautilus_files_view_get_private_list_base (column->view), "drag-begin",
+                      G_CALLBACK (file_drag_started), column);
     gtk_box_append (self->strip, column->box);
     gtk_box_append (self->strip, column->grip);
     return column;
@@ -1158,6 +1194,7 @@ nautilus_miller_view_dispose (GObject *object)
     NautilusMillerView *self = NAUTILUS_MILLER_VIEW (object);
     cancel_reveal (self);
     cancel_restore (self);
+    clear_file_drag (self);
     g_signal_handlers_disconnect_by_data (nautilus_preferences, self);
     self->active_view = NULL;
     g_ptr_array_set_size (self->columns, 0);
