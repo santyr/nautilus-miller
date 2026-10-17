@@ -133,3 +133,5 @@ Base of correction `db573187a`; complete operations base `cd3c2a20049f88435f2586
 - Maintained Python90/90 in191.306s, including the new deterministic split-read parser regression, real I/O observations, actual Sushi workflows across both profiles and persistence.
 
 Logs `/tmp/nautilus-finder-operations-review-final.log`, `...-review-driver.log`, `...-review-final-{build-miller,build-preview-canonical}-testlog.txt`. Previous failed aggregate and captured observer failure remain in the evidence above. One whole-component review/correction pass is complete; all rulings, declined items and M1 Console portability minor remain in [the permanent review record](operations-review.md). This does not complete DnD, extensions, C01–C16 release acceptance or the full goal.
+
+The correction source is committed as `f3a03ec22602e824b3d19da1e7908953edbe60e8`. A verified local evidence bundle preserves the selected full/failed logs, raw trace, workspace and binary hashes beyond `/tmp`: `build-evidence/miller-operations-f3a03ec22.tar.xz`, SHA256 `99dedb0e73991176d25e35583b16c028ee1705b8d8c30589beca3ca731445dc9`; full provenance is in the linked permanent review.

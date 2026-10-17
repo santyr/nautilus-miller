@@ -97,3 +97,9 @@ Failed fixture assumptions, exact logs and transition boundaries are retained in
 - Final: fixed I5 — matching-pattern dangling source SIGSEGV→GREEN; Accept/Cancel weak release and current-context guards pass; same final green gate.
 
 The read-observer parser additionally has a deterministic RED→GREEN regression and unchanged raw failing-trace replay; original failure remains recorded. Full logs: `/tmp/nautilus-finder-operations-review-final.log`, driver `...-review-driver.log`, detailed `...-review-final-{build-miller,build-preview-canonical}-testlog.txt`. Python90 passed in191.306s. One review and one correction pass; no second reviewer. M1 Console fixture portability remains deferred. All chronological and declined-item rulings above remain binding with their costs. Drag workflows, extensions/OpenPGP, real remote/backend, accessibility/performance, observed CI and release transactions remain mandatory.
+
+## Source and durable evidence
+
+Correction commit `f3a03ec22602e824b3d19da1e7908953edbe60e8`; Task4 completion was recorded through task-done with the strict final verifier. All34 ruling lines are retained above in their original sequence, including every declined-item disposition, and M1 remains explicitly deferred.
+
+Local ignored evidence bundle: `build-evidence/miller-operations-f3a03ec22.tar.xz` (1,227,812bytes), SHA256 `99dedb0e73991176d25e35583b16c028ee1705b8d8c30589beca3ca731445dc9`. It contains64 selected logs, the first failed gate, captured raw trace24, complete operations workspace/ledger/review package, permanent evidence documents and a manifest with source revision/results/binary hashes. Its checksum and required members were inspected before scratch cleanup. It is a local verification artifact, not a release RPM or a claim of full-goal completion.
