@@ -7,6 +7,20 @@ The user has explicitly refocused the [active goal](finder-completion-goal.md): 
 Current completion checks are: native reuse audit; coherent column navigation/selection/focus/history/layout; correctly targeted native operations and drag/clipboard integration at affected boundaries; focused preview/extension compatibility; relevant accessibility/responsiveness and owner cleanup; fresh component/release regressions; and traceable packages with a safe installation/rollback handoff. Use existing direct evidence for unchanged paths and add tests for demonstrated or uncovered column integration risks. Actual host installation remains a separate authorization.
 
 
+
+## Focused readiness checkpoint — 2026-10-17
+
+| Area | Current evidence / remaining action |
+|---|---|
+| Native drag integration | Whole-component review/corrections complete: both profiles pass35 actual delayed-backend cases/no skips, including three review regressions and targeted ASAN teardown. Both full Meson40/40 pass. [Review and limitations](dnd-review.md). Outgoing foreign delivery is unverified. |
+| Native operations / clipboard | Reviewed native-operation integration retained. Fresh drag-correction checkpoint passes64 actual cases in each profile, including weak clipboard owner release on tab destruction. No replacement operation engine. |
+| Navigation / layout / preview | Completed component evidence retained; fresh inspector53/navigation10/delayed4/Python90 regressions pass using existing providers. Focused real large/deep-directory smoke evidence remains to finish. Cached active-column visibility after window shrink is a review follow-up; the outgoing fixture did not establish automatic resize reveal. |
+| Extensions | Native FilesView MenuProvider and API4.1/ABI4 preserved. Host preflight finds neither seahorse-nautilus nor nautilus-python installed; their runtime workflows are unverified. [Compatibility scope](extension-compatibility.md). |
+| Fedora packages | Host still has50.4-1.miller1 main/extensions. New release archive/RPMs, release increment, fork package URL and provenance/checksums remain to prepare. No host package changes performed. |
+| GitHub CI | Repository exists with default branchmain; read-only run listing returns no runs and this checkout has no GitHub workflow. Add a focused adapter over existing Meson/build tests; report observed remote results separately. |
+| Deployment | Concrete package/install/rollback handoff pending. Production installation and offline state remain untouched during this work. |
+
+
 Full authority: [goal](finder-completion-goal.md). Historical results stay in [verification](verification.md); no historical pass closes an expanded requirement without new evidence. Status **open** means incomplete, not failed or unsupported. **Blocked** requires a concrete missing environment and is never a pass.
 
 Development branch: `finder-completion`; baseline `8618e792713ae6b248c4ca7d740ae78ce9d3040b`. Worktree `.worktrees/finder-completion`. Installed package at start: `nautilus-50.4-1.miller1.fc44`; no production changes authorized by this goal.

@@ -55,6 +55,7 @@ struct _NautilusMillerView
     NautilusFilesView *active_view; /* borrowed from columns */
     GFile *user_location;
     GdkDrag *file_drag; /* Owned only through native drag completion. */
+    gboolean drag_gesture_active; /* Ends at drop-performed, before data completion. */
     NautilusFilesView *drag_source_view; /* Retain the native source if pruned. */
     GVariant *spring_state; /* Existing immutable snapshot, only while provisional. */
     GdkDrop *spring_drop; /* Native identity also covers drags from other clients. */
@@ -395,7 +396,9 @@ selection_idle (gpointer data)
     MillerColumn *column = data;
     NautilusMillerView *self = column->owner;
     column->selection_idle = 0;
-    if (self->file_drag != NULL || self->spring_state != NULL || self->reconciling || nautilus_files_view_is_selection_auto (column->view) ||
+    if (self->drag_gesture_active ||
+        (self->spring_state != NULL && gtk_drop_controller_motion_contains_pointer (self->drag_motion)) ||
+        self->reconciling || nautilus_files_view_is_selection_auto (column->view) ||
         column->selection_action_generation != self->action_generation)
     {
         return G_SOURCE_REMOVE;
@@ -585,7 +588,7 @@ clear_spring_state (NautilusMillerView *self)
 static gboolean
 spring_leave_idle (gpointer data)
 {
-    NautilusMillerView *self = data;
+    g_autoptr (NautilusMillerView) self = g_object_ref (data);
     self->spring_leave_idle = 0;
     if (gtk_drop_controller_motion_contains_pointer (self->drag_motion) || self->spring_state == NULL)
     {
@@ -600,6 +603,7 @@ spring_leave_idle (gpointer data)
 static void
 drag_strip_enter (GtkDropControllerMotion *controller, double x, double y, NautilusMillerView *self)
 {
+    g_autoptr (NautilusMillerView) hold = g_object_ref (self);
     g_clear_handle_id (&self->spring_leave_idle, g_source_remove);
     if (self->spring_drop != NULL && self->spring_drop != gtk_drop_controller_motion_get_drop (controller))
     {
@@ -628,6 +632,7 @@ drag_strip_leave (GtkDropControllerMotion *controller, NautilusMillerView *self)
 static void
 clear_file_drag (NautilusMillerView *self)
 {
+    self->drag_gesture_active = FALSE;
     if (self->file_drag != NULL)
     {
         g_signal_handlers_disconnect_by_data (self->file_drag, self);
@@ -657,13 +662,23 @@ file_drag_cancelled (GdkDrag *drag, GdkDragCancelReason reason, NautilusMillerVi
 }
 
 static void
+file_drag_dropped (GdkDrag *drag, NautilusMillerView *self)
+{
+    if (self->file_drag != drag) { return; }
+    self->drag_gesture_active = FALSE;
+    stop_drag_scroll (self);
+}
+
+static void
 file_drag_started (NautilusListBase *list_base, GdkDrag *drag, MillerColumn *column)
 {
     NautilusMillerView *self = column->owner;
     clear_file_drag (self);
     self->file_drag = g_object_ref (drag);
+    self->drag_gesture_active = TRUE;
     self->drag_source_view = g_object_ref (column->view);
     g_signal_connect_object (drag, "dnd-finished", G_CALLBACK (file_drag_finished), self, 0);
+    g_signal_connect_object (drag, "drop-performed", G_CALLBACK (file_drag_dropped), self, 0);
     g_signal_connect_object (drag, "cancel", G_CALLBACK (file_drag_cancelled), self, 0);
 }
 

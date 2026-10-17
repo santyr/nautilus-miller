@@ -141,3 +141,24 @@ The fixture also observed that shrinking an already focused window can leave its
 ### Current native integration regression checkpoint
 
 Both development and canonical profiles pass all32 maintained genuine drag cases with the actual delayed backend, no skips (`/tmp/nautilus-finder-dnd-task3-native-integration-{build-miller,build-preview-canonical}.log`; processes84693/56013 terminal0). Each run observes30 local native drags plus3 real foreign drags: the overlap case contains2 physical drags. Local observers report10 accepted/20 canceled; foreign cases include2 native copies and1 exact-snapshot cancellation. Tab endpoint targeting, weak slot/view release, old metadata/native-end overlap, all edge controls and twelve physical hover-pair member bounds pass. Fresh `verify-native-integration.py` confirms these markers and unchanged pre-run fingerprint `38459c535c7f0b8d7a39fc776ccf8232ab3b53a7f3598d6e183cc2dd6a520d81`. This is a component checkpoint before the one fresh whole-component review. Full release regression and packages remain pending; outgoing foreign delivery remains unverified.
+
+
+## Component closure after native lifecycle review
+
+One whole-component [review/correction pass](dnd-review.md) is complete. Three
+Important findings have actual RED→GREEN evidence: reentrant restore/close UAF
+(ASAN), asynchronous status overlay mapping during a stationary native drag, and
+new folder navigation while a native recipient holds completion after release.
+Corrections retain the callback owner, use GTK child visibility, and distinguish
+native gesture release from retained transfer lifetime. No replacement file-job,
+vertical-scroll, hover, clipboard or extension engine was introduced.
+
+The fresh source-frozen checkpoint passes both full Meson40/40, operations64/64
+each, actual delayed-backend DnD35/35 each without skips, inspector53/navigation10/
+delayed4, Python90/90 in187.814s and targeted ASAN1/1. Exec70095 and the fresh
+strict verifier both exit0. Fingerprint and exact logs are in the review record.
+The35 cases reflect authored regressions, not a retained historical numeric gate.
+Outgoing foreign receipt, exact backend/modifier/removal combinations and the
+window-shrink limitation remain explicit in all11 rulings; deferred tests are not
+passes. This closes Task3/current drag component. Release preparation and a
+separately authorized host deployment remain.

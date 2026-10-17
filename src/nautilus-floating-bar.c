@@ -49,7 +49,7 @@ struct _NautilusFloatingBar
 
     GtkEventController *motion_controller;
     GtkEventController *drop_motion_controller;
-    gboolean hidden_for_drag;
+    gboolean drag_in_parent;
     graphene_point_t pointer_in_parent_coordinates;
 };
 
@@ -257,6 +257,14 @@ check_pointer_timeout (gpointer user_data)
 }
 
 static void
+update_drag_visibility (NautilusFloatingBar *self)
+{
+    /* Keep the owner's visible property intact. GTK's child visibility
+     * suppresses mapping independently of later asynchronous status updates. */
+    gtk_widget_set_child_visible (GTK_WIDGET (self), !self->drag_in_parent || self->is_interactive);
+}
+
+static void
 on_pointer_motion (GtkEventController *controller,
                                    double                    x,
                                    double                    y,
@@ -275,16 +283,13 @@ on_pointer_motion (GtkEventController *controller,
         /* Keep a non-interactive status overlay out of the drag's hit path
          * before it reaches a narrow list edge. GTK then receives the first
          * edge motion and supplies its existing native autoscroll. */
-        if (!self->is_interactive && gtk_widget_is_visible (GTK_WIDGET (self)))
-        {
-            nautilus_floating_bar_remove_hover_timeout (self);
-            self->hidden_for_drag = TRUE;
-            gtk_widget_set_visible (GTK_WIDGET (self), FALSE);
-        }
+        self->drag_in_parent = TRUE;
+        nautilus_floating_bar_remove_hover_timeout (self);
+        update_drag_visibility (self);
         return;
     }
 
-    if (self->is_interactive || !gtk_widget_is_visible (GTK_WIDGET (self)))
+    if (self->drag_in_parent || self->is_interactive || !gtk_widget_is_visible (GTK_WIDGET (self)))
     {
         return;
     }
@@ -321,10 +326,10 @@ on_pointer_leave (GtkEventController *controller,
 
     self->pointer_in_parent_coordinates.x = -1;
     self->pointer_in_parent_coordinates.y = -1;
-    if (GTK_IS_DROP_CONTROLLER_MOTION (controller) && self->hidden_for_drag)
+    if (GTK_IS_DROP_CONTROLLER_MOTION (controller))
     {
-        self->hidden_for_drag = FALSE;
-        gtk_widget_set_visible (GTK_WIDGET (self), TRUE);
+        self->drag_in_parent = FALSE;
+        update_drag_visibility (self);
     }
 }
 
@@ -348,11 +353,8 @@ on_parent_changed (GObject    *object,
         g_clear_object (controllers[i]);
     }
 
-    if (self->hidden_for_drag)
-    {
-        self->hidden_for_drag = FALSE;
-        gtk_widget_set_visible (GTK_WIDGET (self), TRUE);
-    }
+    self->drag_in_parent = FALSE;
+    update_drag_visibility (self);
     if (parent != NULL)
     {
         self->motion_controller = g_object_ref (gtk_event_controller_motion_new ());
@@ -527,6 +529,7 @@ nautilus_floating_bar_set_show_stop (NautilusFloatingBar *self,
         gtk_widget_set_visible (self->stop_button,
                                 show_stop);
         self->is_interactive = show_stop;
+        update_drag_visibility (self);
 
         g_object_notify_by_pspec (G_OBJECT (self), properties[PROP_SHOW_STOP]);
     }
