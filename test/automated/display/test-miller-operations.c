@@ -313,6 +313,7 @@ static void
 test_external_clipboard (OperationFixture *f, gconstpointer late_data)
 {
     gboolean delayed = GPOINTER_TO_UINT (late_data) != NAUTILUS_VIEW_MILLER_ID;
+    gboolean close_origin = (GPOINTER_TO_UINT (late_data) & 0x200) != 0;
     NautilusFilesView *destination = operations_open_parent (f);
     g_autofree char *executable = g_file_read_link ("/proc/self/exe", NULL);
     g_autofree char *root_path = g_file_get_path (f->root);
@@ -372,14 +373,42 @@ test_external_clipboard (OperationFixture *f, gconstpointer late_data)
         operations_settle (f);
         NautilusFilesView *other = operations_view_for_directory (f, f->sibling);
         gtk_widget_grab_focus (GTK_WIDGET (other)); operations_assert_focus (f, other);
+        if (close_origin)
+        {
+            /* Exercise the native tab-close pipeline with the real clipboard
+             * read still awaiting the stopped foreign provider. Do not retain
+             * its view or slot: disposal must cancel the pending read. */
+            AdwTabView *tabs = ADW_TAB_VIEW (operations_find_type (f->window, ADW_TYPE_TAB_VIEW));
+            g_assert_nonnull (tabs);
+            AdwTabPage *page = adw_tab_view_get_page (tabs, GTK_WIDGET (original_slot));
+            g_assert_nonnull (page);
+            NautilusWindowSlot *closed_slot = original_slot;
+            NautilusFilesView *closed_view = destination;
+            g_object_add_weak_pointer (G_OBJECT (closed_slot), (gpointer *) &closed_slot);
+            g_object_add_weak_pointer (G_OBJECT (closed_view), (gpointer *) &closed_view);
+            adw_tab_view_close_page (tabs, page);
+            g_clear_object (&original_slot);
+            deadline = g_get_monotonic_time () + 8 * G_TIME_SPAN_SECOND;
+            while (closed_slot != NULL || closed_view != NULL)
+            {
+                g_assert_cmpint (g_get_monotonic_time (), <, deadline); operations_pump (10);
+            }
+            g_assert_cmpint (adw_tab_view_get_n_pages (tabs), ==, 1);
+            g_assert_cmpuint (f->jobs->len, ==, jobs_before);
+            destination = NULL;
+            g_test_message ("Pending real clipboard read: initiating tab and view finalized before provider resumes");
+        }
         g_subprocess_send_signal (child, SIGCONT);
     }
     g_autofree char *name = g_file_get_basename (f->source_file);
     g_autoptr (GFile) copied = g_file_get_child (f->parent, name);
     g_autoptr (GFile) wrong_child = g_file_get_child (f->child, name);
     g_autoptr (GFile) wrong_sibling = g_file_get_child (f->sibling, name);
-    operations_wait_copy (f, destination, copied);
-    operations_assert_bytes (f, copied, payload);
+    if (!close_origin)
+    {
+        operations_wait_copy (f, destination, copied);
+        operations_assert_bytes (f, copied, payload);
+    }
     operations_assert_bytes (f, f->source_file, payload);
     g_assert_false (g_file_query_exists (wrong_child, NULL));
     g_assert_false (g_file_query_exists (wrong_sibling, NULL));
@@ -387,7 +416,10 @@ test_external_clipboard (OperationFixture *f, gconstpointer late_data)
     if (delayed)
     {
         operations_assert_focus (f, operations_view_for_directory (f, f->sibling));
-        g_test_message ("Real external clipboard reply arrived after genuine Ctrl+T; captured parent destination won");
+        if (!close_origin)
+        {
+            g_test_message ("Real external clipboard reply arrived after genuine Ctrl+T; captured parent destination won");
+        }
     }
     g_assert_true (g_output_stream_write_all (g_subprocess_get_stdin_pipe (child), "quit\n", 5, NULL, NULL, &error));
     g_assert_no_error (error);
@@ -397,6 +429,18 @@ test_external_clipboard (OperationFixture *f, gconstpointer late_data)
     while (!exited)
     {
         g_assert_cmpint (g_get_monotonic_time (), <, deadline); operations_pump (10);
+    }
+    if (close_origin)
+    {
+        operations_pump (300);
+        g_assert_cmpuint (f->jobs->len, ==, jobs_before);
+        g_assert_false (g_file_query_exists (copied, NULL));
+        g_assert_false (g_file_query_exists (wrong_child, NULL));
+        g_assert_false (g_file_query_exists (wrong_sibling, NULL));
+        operations_assert_bytes (f, f->source_file, payload);
+        operations_assert_sentinels (f);
+        operations_assert_focus (f, operations_view_for_directory (f, f->sibling));
+        g_test_message ("Real clipboard provider resumed and reaped after tab destruction; no job or destination writes");
     }
 }
 
@@ -2269,6 +2313,9 @@ main (int argc, char **argv)
     /* The extra bit is fixture data, not a native view identifier. */
     g_test_add ("/miller/operations/clipboard-after-tab-switch", OperationFixture,
         GUINT_TO_POINTER (NAUTILUS_VIEW_MILLER_ID | 0x100), operations_setup,
+        test_external_clipboard, operations_teardown);
+    g_test_add ("/miller/operations/clipboard-after-tab-destruction", OperationFixture,
+        GUINT_TO_POINTER (NAUTILUS_VIEW_MILLER_ID | 0x200), operations_setup,
         test_external_clipboard, operations_teardown);
     COLUMN_CASE ("new-folder-parent", test_new_folder);
     COLUMN_CASE ("new-folder-empty-child", test_new_folder);

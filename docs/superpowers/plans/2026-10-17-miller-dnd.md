@@ -102,3 +102,9 @@ Task3 adds actual Grid/List vertical controls alongside Columns. The initial Col
 ### Execution adjustment: deeper hover visibility
 
 Add genuine third-hover/pair-visible cases in LTR and RTL. Actual loaded models alone do not establish that each newly disclosed directory is reachable on screen. Verify both pair members inside the viewport before the next actual hover, preserve original source selection/action focus and exact cancel snapshot, and use the existing minimal reveal implementation for any reproduced defect. These two additions raise the final DnD target35→37; all original14 Task3 workflows and operations64 remain mandatory.
+
+## Current Task3 checkpoint after user scope revision
+
+The current maintained set has32 genuine DnD cases: prior27 plus native tab endpoint,3 incoming foreign GTK cases, and native tab destruction. Pending clipboard owner destruction is the64th operations case. Finish meaningful component regressions and one fresh whole-component review; use a release regression checkpoint after corrections. The original exact37 target and exhaustive list are superseded by the revised goal.
+
+Separate native between-window MOVE, bookmark/volume-specific transfers, distinct source/destination removal cases, repeat-drag stress and actual outgoing foreign-sink receipt are deferred and unverified. Incoming transfers already cross a genuine GTK process/window boundary and local native MOVE retains filesystem evidence. Native payload/operation providers remain reused. Failed outgoing fixture experiments are preserved without treating source acceptance as recipient delivery. The review must weigh native callback ownership/reentrancy and the observed offscreen cached active column after window shrink.

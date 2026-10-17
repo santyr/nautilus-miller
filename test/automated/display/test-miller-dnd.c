@@ -1,5 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include <test-utilities.h>
+#include <glib-unix.h>
+#include <sys/stat.h>
+#include <stdio.h>
+#include <unistd.h>
 #include <gdk/wayland/gdkwayland.h>
 #include "miller-test-operations.h"
 #include "miller-test-backend.h"
@@ -9,6 +13,8 @@
 #include "nautilus-global-preferences.h"
 #include "nautilus-progress-info.h"
 #include "nautilus-miller-view.h"
+#include "nautilus-list-base.h"
+#include "nautilus-floating-bar.h"
 #include "nautilus-resources.h"
 #include "nautilus-tag-manager.h"
 #include "nautilus-view-cell.h"
@@ -26,9 +32,105 @@ typedef struct
     GdkDragAction action;
     GFile *expected_source;
     double pointer_x, pointer_y; /* Proved fullscreen surface coordinates. */
+    GtkTextDirection previous_direction;
 } DndFixture;
 
 static MillerTestInput *input;
+
+/* Ordinary separate GTK client: only public file-list drag contracts. */
+static GdkContentProvider *
+external_prepare (GtkDragSource *source, double x, double y, GFile *file)
+{
+    g_printerr ("External native source prepare at %.1f,%.1f\n", x, y);
+    GdkFileList *files = gdk_file_list_new_from_array (&file, 1);
+    GdkContentProvider *provider = gdk_content_provider_new_typed (GDK_TYPE_FILE_LIST, files);
+    g_boxed_free (GDK_TYPE_FILE_LIST, files);
+    return provider;
+}
+
+static void
+external_accepted (GdkDrag *drag, gpointer unused)
+{
+    g_assert_cmpuint (gdk_drag_get_selected_action (drag), ==, GDK_ACTION_COPY);
+    g_print ("accepted-copy\n");
+    fflush (stdout);
+}
+
+static void
+external_began (GtkDragSource *source, GdkDrag *drag, gpointer unused)
+{
+    g_signal_connect (drag, "drop-performed", G_CALLBACK (external_accepted), NULL);
+    g_print ("began\n");
+    fflush (stdout);
+}
+
+static void
+external_ended (GtkDragSource *source, GdkDrag *drag, gboolean delete_data, gpointer unused)
+{
+    g_printerr ("External native drag ended action=%u\n", gdk_drag_get_selected_action (drag));
+    g_print ("ended\n");
+    fflush (stdout);
+}
+
+static gboolean
+external_cancelled (GtkDragSource *source, GdkDrag *drag, GdkDragCancelReason reason, gpointer unused)
+{
+    g_printerr ("External native drag cancelled reason=%u\n", reason);
+    return FALSE;
+}
+
+static gboolean
+external_quit (gint fd, GIOCondition condition, gpointer loop)
+{
+    g_main_loop_quit (loop);
+    return G_SOURCE_REMOVE;
+}
+
+static int
+external_source_main (const char *root_path, const char *source_path)
+{
+    g_autoptr (GError) error = NULL;
+    g_autoptr (MillerTestInput) proof = miller_test_input_new (&error);
+    g_assert_no_error (error); g_assert_nonnull (proof);
+    operations_assert_private_home ();
+    g_autoptr (GFile) temporary = g_file_new_for_path (g_get_tmp_dir ());
+    g_autoptr (GFile) root = g_file_new_for_path (root_path);
+    g_autoptr (GFile) file = g_file_new_for_path (source_path);
+    g_assert_true (g_file_has_prefix (root, temporary));
+    g_assert_true (g_file_has_prefix (file, root));
+    struct stat st;
+    g_assert_cmpint (lstat (root_path, &st), ==, 0);
+    g_assert_true (S_ISDIR (st.st_mode)); g_assert_cmpuint (st.st_uid, ==, geteuid ());
+    g_assert_cmpuint (st.st_mode & 0777, ==, 0700);
+    g_assert_cmpint (lstat (source_path, &st), ==, 0);
+    g_assert_true (S_ISREG (st.st_mode)); g_assert_cmpuint (st.st_uid, ==, geteuid ());
+    gtk_init ();
+    GtkWidget *window = gtk_window_new ();
+    GtkWidget *label = gtk_label_new ("Owned public GTK file drag client");
+    gtk_window_set_child (GTK_WINDOW (window), label);
+    GtkDragSource *source = gtk_drag_source_new ();
+    gtk_drag_source_set_actions (source, GDK_ACTION_COPY);
+    g_signal_connect (source, "prepare", G_CALLBACK (external_prepare), file);
+    g_signal_connect (source, "drag-begin", G_CALLBACK (external_began), NULL);
+    g_signal_connect (source, "drag-end", G_CALLBACK (external_ended), NULL);
+    g_signal_connect (source, "drag-cancel", G_CALLBACK (external_cancelled), NULL);
+    gtk_widget_add_controller (label, GTK_EVENT_CONTROLLER (source));
+    g_autoptr (GMainLoop) loop = g_main_loop_new (NULL, FALSE);
+    g_unix_fd_add (STDIN_FILENO, G_IO_IN | G_IO_HUP, external_quit, loop);
+    gtk_window_set_default_size (GTK_WINDOW (window), 360, 200);
+    gtk_window_present (GTK_WINDOW (window));
+    gint64 deadline = g_get_monotonic_time () + 8 * G_TIME_SPAN_SECOND;
+    while (!gtk_window_is_active (GTK_WINDOW (window)) || !gtk_widget_get_mapped (label))
+    {
+        g_assert_cmpint (g_get_monotonic_time (), <, deadline); operations_pump (10);
+    }
+    g_print ("ready\n");
+    fflush (stdout);
+    g_printerr ("External source ready mapped and active\n");
+    g_main_loop_run (loop);
+    gtk_window_destroy (GTK_WINDOW (window));
+    return 0;
+}
 
 static GtkWidget *
 dnd_cell_for_file (GtkWidget *widget, NautilusFile *file)
@@ -138,8 +240,12 @@ dnd_watch_source (DndFixture *d, GtkWidget *cell)
 static void
 dnd_setup (DndFixture *d, gconstpointer mode)
 {
+    d->previous_direction = gtk_widget_get_default_direction ();
+    if (g_str_has_suffix (g_test_get_path (), "-rtl"))
+    {
+        gtk_widget_set_default_direction (GTK_TEXT_DIR_RTL);
+    }
     operations_setup (&d->files, mode);
-
 }
 
 static void
@@ -155,6 +261,7 @@ dnd_teardown (DndFixture *d, gconstpointer unused)
 {
     dnd_clear_watch (d);
     operations_teardown (&d->files, unused);
+    gtk_widget_set_default_direction (d->previous_direction);
 }
 
 static void
@@ -354,6 +461,72 @@ test_native_file_drag (DndFixture *d, gconstpointer unused)
 }
 
 static void
+test_drag_between_tabs (DndFixture *d, gconstpointer unused)
+{
+    OperationFixture *f = &d->files;
+    NautilusFilesView *source = operations_view_for_directory (f, f->source_dir);
+    operations_select (f, source, f->source_file);
+    g_autoptr (NautilusWindowSlot) origin = g_object_ref (f->slot);
+    operations_chord (GDK_KEY_t, FALSE);
+    g_autoptr (NautilusWindowSlot) destination_slot = NULL;
+    g_object_get (f->window, "active-slot", &destination_slot, NULL);
+    g_assert_true (destination_slot != origin);
+    g_set_object (&f->slot, destination_slot);
+    nautilus_window_open_location_full (NAUTILUS_WINDOW (f->window), f->parent, 0, NULL);
+    operations_settle (f);
+    NautilusFilesView *parent = operations_view_for_directory (f, f->parent);
+    operations_select (f, parent, f->child);
+    NautilusFilesView *destination = operations_view_for_directory (f, f->child);
+    g_assert_true (nautilus_window_slot_get_current_view (destination_slot) == parent);
+    g_assert_true (g_file_equal (nautilus_window_slot_get_location (destination_slot), f->child));
+    guint destination_history = g_list_length (nautilus_window_slot_get_back_history (destination_slot));
+    guint origin_history = g_list_length (nautilus_window_slot_get_back_history (origin));
+    AdwTabView *tabs = ADW_TAB_VIEW (operations_find_type (f->window, ADW_TYPE_TAB_VIEW));
+    GtkWidget *bar = operations_find_type (f->window, ADW_TYPE_TAB_BAR);
+    g_assert_nonnull (tabs); g_assert_nonnull (bar);
+    AdwTabPage *origin_page = adw_tab_view_get_page (tabs, GTK_WIDGET (origin));
+    AdwTabPage *destination_page = adw_tab_view_get_page (tabs, GTK_WIDGET (destination_slot));
+    g_assert_nonnull (origin_page); g_assert_nonnull (destination_page);
+    adw_tab_view_set_selected_page (tabs, origin_page);
+    g_set_object (&f->slot, origin);
+    operations_settle (f);
+    gtk_widget_grab_focus (GTK_WIDGET (source)); operations_assert_focus (f, source);
+    GtkWidget *label = NULL;
+    gint64 deadline = g_get_monotonic_time () + 8 * G_TIME_SPAN_SECOND;
+    while ((label = operations_find_label (bar, adw_tab_page_get_title (destination_page))) == NULL ||
+           !gtk_widget_get_mapped (label))
+    {
+        g_assert_cmpint (g_get_monotonic_time (), <, deadline); operations_pump (10);
+    }
+    g_autoptr (GtkWidget) target = g_object_ref (label);
+    d->expected_source = g_object_ref (f->source_file);
+    GtkWidget *cell = dnd_wait_cell (d, source, f->source_file);
+    dnd_drag (d, cell, target, gtk_widget_get_width (target) / 2.0,
+              gtk_widget_get_height (target) / 2.0, GDK_ACTION_COPY);
+    g_assert_cmpuint (d->accepted, ==, 1); g_assert_cmpuint (d->cancelled, ==, 0);
+    g_assert_cmpuint (d->action, ==, GDK_ACTION_COPY);
+    g_assert_cmpuint (f->jobs->len, ==, 1);
+    g_autofree char *name = g_file_get_basename (f->source_file);
+    g_autoptr (GFile) copied = g_file_get_child (f->child, name);
+    operations_wait_copy (f, destination, copied);
+    operations_assert_bytes (f, copied, MILLER_TEST_OPERATION_PAYLOAD);
+    operations_assert_bytes (f, f->source_file, MILLER_TEST_OPERATION_PAYLOAD);
+    GFile *untouched[] = { f->root, f->parent, f->sibling };
+    for (guint i = 0; i < G_N_ELEMENTS (untouched); i++)
+    {
+        g_autoptr (GFile) absent = g_file_get_child (untouched[i], name);
+        g_assert_false (g_file_query_exists (absent, NULL));
+    }
+    operations_assert_sentinels (f);
+    g_assert_cmpuint (g_list_length (nautilus_window_slot_get_back_history (origin)), ==, origin_history);
+    g_assert_cmpuint (g_list_length (nautilus_window_slot_get_back_history (destination_slot)), ==, destination_history);
+    adw_tab_view_set_selected_page (tabs, destination_page);
+    g_set_object (&f->slot, destination_slot); operations_settle (f);
+    gtk_widget_grab_focus (GTK_WIDGET (parent)); operations_assert_focus (f, parent);
+    g_test_message ("Native AdwTabBar drop used destination tab endpoint, independently of its active parent column");
+}
+
+static void
 dnd_assert_source_selection (DndFixture *d, NautilusFilesView *source)
 {
     g_autolist (NautilusFile) selected = nautilus_files_view_get_selection (source);
@@ -362,6 +535,102 @@ dnd_assert_source_selection (DndFixture *d, NautilusFilesView *source)
     g_test_message ("Hover source selection still identifies original dragged file: %d",
                     g_file_equal (location, d->expected_source));
     g_assert_true (g_file_equal (location, d->expected_source));
+}
+
+static void
+test_external_file_drag (DndFixture *d, gconstpointer unused)
+{
+    OperationFixture *f = &d->files;
+    gboolean cancel = g_str_has_suffix (g_test_get_path (), "spring-cancel");
+    gboolean hover = cancel || g_str_has_suffix (g_test_get_path (), "spring-drop");
+    d->expected_source = g_object_ref (f->source_file);
+    g_autoptr (GFile) folder = g_file_get_child (f->source_dir, "external-drop-here");
+    operations_owned (f, folder); g_assert_true (g_file_make_directory (folder, NULL, NULL));
+    NautilusFilesView *view = operations_view_for_directory (f, f->source_dir);
+    operations_select (f, view, f->source_file);
+    NautilusMillerView *miller = NAUTILUS_MILLER_VIEW (operations_find_type (f->window, NAUTILUS_TYPE_MILLER_VIEW));
+    g_autoptr (GVariant) before = nautilus_miller_view_capture_state (miller, FALSE);
+    guint history = g_list_length (nautilus_window_slot_get_back_history (f->slot));
+    g_autofree char *executable = g_file_read_link ("/proc/self/exe", NULL);
+    g_autofree char *root = g_file_get_path (f->root);
+    g_autofree char *path = g_file_get_path (f->source_file);
+    g_autoptr (GError) error = NULL;
+    f->receiver = g_subprocess_new (G_SUBPROCESS_FLAGS_STDIN_PIPE | G_SUBPROCESS_FLAGS_STDOUT_PIPE,
+        &error, executable, "--external-drag-source", root, path, NULL);
+    g_assert_no_error (error); g_assert_nonnull (f->receiver);
+    f->receiver_output = g_data_input_stream_new (g_subprocess_get_stdout_pipe (f->receiver));
+    operations_child_marker (f->receiver_output, "ready");
+    g_test_message ("External source readiness received; sending genuine pointer input");
+    g_assert_true (miller_test_input_motion (input, -10000, -10000, &error));
+    g_assert_true (miller_test_input_motion (input, 640, 450, &error));
+    operations_pump (100);
+    g_assert_true (miller_test_input_key (input, GDK_KEY_Control_L, TRUE, &error));
+    g_assert_true (miller_test_input_button (input, 272, TRUE, &error));
+    operations_pump (140);
+    g_assert_true (miller_test_input_motion (input, 18, 0, &error));
+    operations_child_marker (f->receiver_output, "began");
+    g_test_message ("External source began genuine drag; exposing recipient");
+    d->pointer_x = 658; d->pointer_y = 450;
+    operations_pump (120);
+    GtkWidget *cell = dnd_wait_cell (d, view, folder);
+    dnd_move_to (d, cell, gtk_widget_get_width (cell) * .25, gtk_widget_get_height (cell) / 2.0);
+    GtkWidget *scroller = operations_find_type (GTK_WIDGET (miller), GTK_TYPE_SCROLLED_WINDOW);
+    g_autoptr (GListModel) controllers = gtk_widget_observe_controllers (scroller);
+    GdkDrop *foreign = NULL;
+    for (guint i = 0; i < g_list_model_get_n_items (controllers); i++)
+    {
+        g_autoptr (GtkEventController) controller = g_list_model_get_item (controllers, i);
+        if (GTK_IS_DROP_CONTROLLER_MOTION (controller))
+        {
+            foreign = gtk_drop_controller_motion_get_drop (GTK_DROP_CONTROLLER_MOTION (controller));
+            if (foreign != NULL) { break; }
+        }
+    }
+    g_assert_nonnull (foreign); g_assert_null (gdk_drop_get_drag (foreign));
+    g_assert_true (gdk_content_formats_contain_mime_type (gdk_drop_get_formats (foreign), "text/uri-list"));
+    g_test_message ("Recipient observes genuine foreign GdkDrop with public URI MIME and no local GdkDrag");
+    if (hover)
+    {
+        g_assert_true (miller_test_input_motion (input, 18, 0, &error)); d->pointer_x += 18;
+        operations_pump (750);
+        g_assert_nonnull (operations_view_for_directory (f, folder));
+        g_assert_true (g_file_equal (nautilus_window_slot_get_location (f->slot), f->source_dir));
+        dnd_assert_source_selection (d, view);
+        if (cancel) { operations_key (GDK_KEY_Escape); }
+        else
+        {
+            NautilusFilesView *destination = operations_view_for_directory (f, folder);
+            dnd_move_to (d, GTK_WIDGET (destination), gtk_widget_get_width (GTK_WIDGET (destination)) / 2.0,
+                         gtk_widget_get_height (GTK_WIDGET (destination)) * .78);
+        }
+    }
+    g_assert_true (miller_test_input_button (input, 272, FALSE, &error));
+    g_assert_true (miller_test_input_key (input, GDK_KEY_Control_L, FALSE, &error));
+    g_assert_no_error (error);
+    if (!cancel) { operations_child_marker (f->receiver_output, "accepted-copy"); }
+    operations_child_marker (f->receiver_output, "ended");
+    operations_stop_receiver (f); operations_settle (f);
+    g_autofree char *name = g_file_get_basename (f->source_file);
+    g_autoptr (GFile) result = g_file_get_child (folder, name);
+    if (cancel)
+    {
+        g_assert_false (g_file_query_exists (result, NULL));
+        g_assert_cmpuint (f->jobs->len, ==, 0);
+        g_autoptr (GVariant) after = nautilus_miller_view_capture_state (miller, FALSE);
+        g_assert_true (g_variant_equal (before, after));
+        dnd_assert_source_selection (d, view);
+    }
+    else
+    {
+        operations_assert_bytes (f, result, MILLER_TEST_OPERATION_PAYLOAD);
+        g_assert_cmpuint (f->jobs->len, ==, 1);
+        g_assert_true (nautilus_progress_info_get_is_finished (f->jobs->pdata[0]));
+    }
+    operations_assert_bytes (f, f->source_file, MILLER_TEST_OPERATION_PAYLOAD);
+    operations_assert_sentinels (f);
+    g_assert_cmpuint (g_list_length (nautilus_window_slot_get_back_history (f->slot)), ==, history + (hover && !cancel));
+    g_assert_true (g_file_equal (nautilus_window_slot_get_location (f->slot), hover && !cancel ? folder : f->source_dir));
+    g_test_message ("Real foreign GTK public file drag: native COPY or cancellation completed and helper reaped");
 }
 
 static void
@@ -406,19 +675,94 @@ dnd_hover_folder (DndFixture *d, NautilusFilesView *parent, GFile *folder)
 }
 
 static void
+test_tab_closed_during_drag (DndFixture *d, gconstpointer unused)
+{
+    OperationFixture *f = &d->files;
+    NautilusFilesView *source = operations_view_for_directory (f, f->source_dir);
+    g_autoptr (GFile) folder = g_file_get_child (f->source_dir, "closing-drop-here");
+    operations_owned (f, folder); g_assert_true (g_file_make_directory (folder, NULL, NULL));
+    operations_select (f, source, f->source_file);
+    g_autoptr (NautilusWindowSlot) origin = g_object_ref (f->slot);
+    operations_chord (GDK_KEY_t, FALSE);
+    g_autoptr (NautilusWindowSlot) survivor = NULL;
+    g_object_get (f->window, "active-slot", &survivor, NULL);
+    g_assert_true (survivor != origin); g_set_object (&f->slot, survivor);
+    nautilus_window_open_location_full (NAUTILUS_WINDOW (f->window), f->sibling, 0, NULL);
+    operations_settle (f);
+    guint history = g_list_length (nautilus_window_slot_get_back_history (survivor));
+    AdwTabView *tabs = ADW_TAB_VIEW (operations_find_type (f->window, ADW_TYPE_TAB_VIEW));
+    AdwTabPage *page = adw_tab_view_get_page (tabs, GTK_WIDGET (origin));
+    adw_tab_view_set_selected_page (tabs, page); g_set_object (&f->slot, origin);
+    operations_settle (f);
+    gtk_widget_grab_focus (GTK_WIDGET (source)); operations_assert_focus (f, source);
+    d->expected_source = g_object_ref (f->source_file);
+    GtkWidget *cell = dnd_wait_cell (d, source, f->source_file);
+    dnd_start (d, cell, f->window, GDK_ACTION_COPY);
+    dnd_hover_folder (d, source, folder);
+    NautilusWindowSlot *closed_slot = origin;
+    NautilusFilesView *closed_view = source;
+    g_object_add_weak_pointer (G_OBJECT (closed_slot), (gpointer *) &closed_slot);
+    g_object_add_weak_pointer (G_OBJECT (closed_view), (gpointer *) &closed_view);
+    g_set_object (&f->slot, survivor);
+    adw_tab_view_close_page (tabs, page); g_clear_object (&origin);
+    dnd_finish (d, GDK_ACTION_COPY, TRUE);
+    gint64 deadline = g_get_monotonic_time () + 8 * G_TIME_SPAN_SECOND;
+    while (closed_slot != NULL || closed_view != NULL)
+    {
+        g_assert_cmpint (g_get_monotonic_time (), <, deadline); operations_pump (10);
+    }
+    g_assert_cmpint (adw_tab_view_get_n_pages (tabs), ==, 1);
+    g_assert_cmpuint (d->accepted, ==, 0); g_assert_cmpuint (d->cancelled, ==, 1);
+    g_assert_cmpuint (f->jobs->len, ==, 0);
+    g_assert_true (g_file_equal (nautilus_window_slot_get_location (survivor), f->sibling));
+    g_assert_cmpuint (g_list_length (nautilus_window_slot_get_back_history (survivor)), ==, history);
+    operations_assert_bytes (f, f->source_file, MILLER_TEST_OPERATION_PAYLOAD);
+    operations_assert_sentinels (f);
+    operations_assert_focus (f, operations_view_for_directory (f, f->sibling));
+    g_test_message ("Closed real drag origin and spring branch released slot/view; surviving tab unchanged and no jobs");
+}
+
+static void
+dnd_assert_hover_pair_visible (DndFixture *d, NautilusFilesView *parent, NautilusFilesView *child)
+{
+    NautilusMillerView *miller = NAUTILUS_MILLER_VIEW (operations_find_type (d->files.window, NAUTILUS_TYPE_MILLER_VIEW));
+    GtkWidget *viewport = operations_find_type (GTK_WIDGET (miller), GTK_TYPE_SCROLLED_WINDOW);
+    NautilusFilesView *views[] = { parent, child };
+    double width = gtk_widget_get_width (viewport);
+    for (guint i = 0; i < G_N_ELEMENTS (views); i++)
+    {
+        graphene_rect_t bounds;
+        g_assert_true (gtk_widget_get_mapped (GTK_WIDGET (views[i])));
+        g_assert_true (gtk_widget_compute_bounds (GTK_WIDGET (views[i]), viewport, &bounds));
+        g_test_message ("Actual hover pair member%u x=%.1f width=%.1f viewport=%.1f direction=%u",
+                        i, bounds.origin.x, bounds.size.width, width,
+                        gtk_widget_get_direction (GTK_WIDGET (miller)));
+        g_assert_cmpfloat (bounds.origin.x, >=, -1);
+        g_assert_cmpfloat (bounds.origin.x + bounds.size.width, <=, width + 1);
+    }
+}
+
+static void
 test_native_spring (DndFixture *d, gconstpointer unused)
 {
     OperationFixture *f = &d->files;
     gboolean backtrack = g_str_has_suffix (g_test_get_path (), "spring-backtrack-ancestor");
     gboolean leave = g_str_has_suffix (g_test_get_path (), "leave-restores-branch");
     gboolean newer = g_str_has_suffix (g_test_get_path (), "newer-navigation-wins");
-    gboolean nested = g_str_has_suffix (g_test_get_path (), "nested-spring-cancel") || backtrack;
+    gboolean reveal_pair = g_str_has_prefix (g_test_get_path (), "/miller/dnd/nested-spring-reveals-hover-pair");
+    gboolean nested = g_str_has_suffix (g_test_get_path (), "nested-spring-cancel") || backtrack || reveal_pair;
     gboolean accept = g_str_has_suffix (g_test_get_path (), "spring-drop-retains-destination");
     g_autoptr (GFile) folder = g_file_get_child (f->source_dir, "spring-folder");
     g_autoptr (GFile) inner = g_file_get_child (folder, "nested-folder");
     operations_owned (f, inner);
     g_assert_true (g_file_make_directory (folder, NULL, NULL));
     g_assert_true (g_file_make_directory (inner, NULL, NULL));
+    g_autoptr (GFile) third = reveal_pair ? g_file_get_child (inner, "third-folder") : NULL;
+    if (third != NULL)
+    {
+        operations_owned (f, third);
+        g_assert_true (g_file_make_directory (third, NULL, NULL));
+    }
     NautilusFilesView *source = operations_view_for_directory (f, f->source_dir);
     operations_select (f, source, f->source_file);
     NautilusMillerView *miller = NAUTILUS_MILLER_VIEW (operations_find_type (f->window, NAUTILUS_TYPE_MILLER_VIEW));
@@ -434,6 +778,7 @@ test_native_spring (DndFixture *d, gconstpointer unused)
     g_variant_get_child (prepared, 2, "d", &prepared_scroll);
     g_test_message ("Native source press/focus scroll: initial=%.1f prepared=%.1f", initial_scroll, prepared_scroll);
     NautilusFilesView *destination = dnd_hover_folder (d, source, folder);
+    if (reveal_pair) { dnd_assert_hover_pair_visible (d, source, destination); }
     dnd_assert_source_selection (d, source);
     g_assert_true (g_file_equal (nautilus_miller_view_get_location (miller), folder));
     g_assert_true (g_file_equal (nautilus_window_slot_get_location (f->slot), f->source_dir));
@@ -443,13 +788,26 @@ test_native_spring (DndFixture *d, gconstpointer unused)
     dnd_assert_drag_focus (d, source);
     if (nested)
     {
+        NautilusFilesView *hovered_parent = destination;
         destination = dnd_hover_folder (d, destination, inner);
+        if (reveal_pair) { dnd_assert_hover_pair_visible (d, hovered_parent, destination); }
         dnd_assert_source_selection (d, source);
         g_assert_true (g_file_equal (nautilus_miller_view_get_location (miller), inner));
         g_assert_true (g_file_equal (nautilus_window_slot_get_location (f->slot), f->source_dir));
         g_assert_cmpuint (g_list_length (nautilus_window_slot_get_back_history (f->slot)), ==, history);
         g_assert_cmpuint (f->jobs->len, ==, 0);
         dnd_assert_drag_focus (d, source);
+    }
+    if (reveal_pair)
+    {
+        NautilusFilesView *hovered_parent = destination;
+        destination = dnd_hover_folder (d, destination, third);
+        dnd_assert_hover_pair_visible (d, hovered_parent, destination);
+        dnd_assert_source_selection (d, source); dnd_assert_drag_focus (d, source);
+        g_assert_true (g_file_equal (nautilus_miller_view_get_location (miller), third));
+        g_assert_true (g_file_equal (nautilus_window_slot_get_location (f->slot), f->source_dir));
+        g_assert_cmpuint (g_list_length (nautilus_window_slot_get_back_history (f->slot)), ==, history);
+        g_assert_cmpuint (f->jobs->len, ==, 0); g_assert_cmpuint (d->ended, ==, 0);
     }
     if (backtrack)
     {
@@ -699,9 +1057,177 @@ test_old_drag_cannot_restore_new_drag (DndFixture *d, gconstpointer unused)
     dnd_clear_watch (&next);
 }
 
+static void
+test_drag_edge_scroll (DndFixture *d, gconstpointer unused)
+{
+    OperationFixture *f = &d->files;
+    gboolean vertical = g_str_has_suffix (g_test_get_path (), "vertical-edge-scroll");
+    gboolean rtl = g_str_has_suffix (g_test_get_path (), "horizontal-edge-rtl");
+    gboolean cancel_at_edge = g_str_has_suffix (g_test_get_path (), "edge-stop-on-cancel");
+    if (rtl)
+    {
+        gtk_widget_set_direction (f->window, GTK_TEXT_DIR_RTL);
+        /* Controlled native navigation makes the current endpoint visible in
+         * the changed physical layout before real pointer input begins. */
+        nautilus_window_open_location_full (NAUTILUS_WINDOW (f->window), f->parent, 0, NULL);
+        operations_settle (f);
+        nautilus_window_open_location_full (NAUTILUS_WINDOW (f->window), f->source_dir, 0, NULL);
+        operations_settle (f);
+    }
+    NautilusFilesView *source = operations_view_for_directory (f, f->source_dir);
+    if (vertical)
+    {
+        for (guint i = 0; i < 200; i++)
+        {
+            g_autofree char *name = g_strdup_printf ("row-%03u.txt", i);
+            g_autoptr (GFile) row = g_file_get_child (f->source_dir, name);
+            operations_owned (f, row);
+            g_assert_true (g_file_replace_contents (row, "row", 3, NULL, FALSE, 0, NULL, NULL, NULL));
+        }
+        g_autoptr (GFile) last = g_file_get_child (f->source_dir, "row-199.txt");
+        operations_wait_file (f, source, last);
+    }
+    operations_select (f, source, f->source_file);
+    NautilusMillerView *miller = NAUTILUS_MILLER_VIEW (operations_find_type (f->window, NAUTILUS_TYPE_MILLER_VIEW));
+    if (rtl) { g_assert_cmpint (gtk_widget_get_direction (GTK_WIDGET (miller)), ==, GTK_TEXT_DIR_RTL); }
+    GtkScrolledWindow *scroller = vertical ? GTK_SCROLLED_WINDOW (nautilus_list_base_get_scrolled_window (
+        nautilus_files_view_get_private_list_base (source))) :
+        GTK_SCROLLED_WINDOW (operations_find_type (GTK_WIDGET (miller), GTK_TYPE_SCROLLED_WINDOW));
+    g_assert_nonnull (scroller);
+    GtkAdjustment *adjustment = vertical ? gtk_scrolled_window_get_vadjustment (scroller) :
+                                           gtk_scrolled_window_get_hadjustment (scroller);
+    double lower = gtk_adjustment_get_lower (adjustment);
+    double maximum = gtk_adjustment_get_upper (adjustment) - gtk_adjustment_get_page_size (adjustment);
+    g_assert_cmpfloat (maximum - lower, >, 100);
+    guint history = g_list_length (nautilus_window_slot_get_back_history (f->slot));
+    GtkWidget *floating_bar = vertical && f->view_id == NAUTILUS_VIEW_MILLER_ID ?
+        operations_find_type (GTK_WIDGET (source), NAUTILUS_TYPE_FLOATING_BAR) : NULL;
+    if (floating_bar != NULL)
+    {
+        gint64 deadline = g_get_monotonic_time () + 8 * G_TIME_SPAN_SECOND;
+        while (!gtk_widget_get_visible (floating_bar))
+        {
+            g_assert_cmpint (g_get_monotonic_time (), <, deadline); operations_pump (10);
+        }
+    }
+    d->expected_source = g_object_ref (f->source_file);
+    GtkWidget *cell = dnd_wait_cell (d, source, f->source_file);
+    dnd_start (d, cell, GTK_WIDGET (scroller), GDK_ACTION_COPY);
+    double before = gtk_adjustment_get_value (adjustment);
+    if (!vertical && !rtl) { g_assert_cmpfloat (before - lower, >, 80); }
+    else { g_assert_cmpfloat (maximum - before, >, 80); }
+    double x = vertical ? gtk_widget_get_width (GTK_WIDGET (scroller)) / 2.0 :
+                          rtl ? gtk_widget_get_width (GTK_WIDGET (scroller)) - 8 : 8;
+    double y = vertical ? gtk_widget_get_height (GTK_WIDGET (scroller)) - 24 :
+                          gtk_widget_get_height (GTK_WIDGET (scroller)) * .78;
+    gint64 scroll_start = g_get_monotonic_time ();
+    dnd_move_to (d, GTK_WIDGET (scroller), x, y);
+    if (floating_bar != NULL) { g_assert_false (gtk_widget_get_visible (floating_bar)); }
+    GtkWidget *picked = gtk_widget_pick (f->window, d->pointer_x, d->pointer_y, GTK_PICK_DEFAULT);
+    if (vertical)
+    {
+        /* Keep inside GTK's native 30px edge zone, above the outer strip's
+         * overlay horizontal scrollbar. Prove the actual list receives it. */
+        g_assert_nonnull (picked);
+        g_assert_true (picked == GTK_WIDGET (source) || gtk_widget_is_ancestor (picked, GTK_WIDGET (source)));
+        gboolean list_adjustment = FALSE;
+        for (GtkWidget *widget = picked; widget != NULL && widget != GTK_WIDGET (source); widget = gtk_widget_get_parent (widget))
+        {
+            if (GTK_IS_SCROLLABLE (widget) && gtk_scrollable_get_vadjustment (GTK_SCROLLABLE (widget)) == adjustment)
+            {
+                list_adjustment = TRUE;
+                graphene_point_t point;
+                g_assert_true (gtk_widget_compute_point (f->window, widget,
+                    &GRAPHENE_POINT_INIT (d->pointer_x, d->pointer_y), &point));
+                g_test_message ("Native list edge local=(%.1f,%.1f) size=%dx%d", point.x, point.y,
+                                gtk_widget_get_width (widget), gtk_widget_get_height (widget));
+            }
+        }
+        g_assert_true (list_adjustment);
+        g_test_message ("Native edge pointer reaches source list's own vertical adjustment");
+    }
+    operations_pump (400);
+    double moved = gtk_adjustment_get_value (adjustment);
+    g_test_message ("Actual drag edge scroll vertical=%d rtl=%d before=%.1f after=%.1f",
+                    vertical, rtl, before, moved);
+    if (!vertical && !rtl) { g_assert_cmpfloat (moved, <, before - 20); }
+    else { g_assert_cmpfloat (moved, >, before + 20); }
+    if (!vertical)
+    {
+        double elapsed = (g_get_monotonic_time () - scroll_start) / (double) G_TIME_SPAN_SECOND;
+        g_assert_cmpfloat (ABS (moved - before), <=, 600 * (elapsed + .05));
+    }
+    if (cancel_at_edge)
+    {
+        double paused_position = gtk_adjustment_get_value (adjustment);
+        g_usleep (300 * G_TIME_SPAN_MILLISECOND);
+        gint64 resumed = g_get_monotonic_time ();
+        operations_pump (40);
+        double elapsed = (g_get_monotonic_time () - resumed) / (double) G_TIME_SPAN_SECOND;
+        double delta = ABS (gtk_adjustment_get_value (adjustment) - paused_position);
+        g_test_message ("Native drag frame gap300ms: resumed delta=%.1f", delta);
+        g_assert_cmpfloat (delta, <=, 600 * (.05 + elapsed + .03));
+    }
+    g_assert_cmpuint (d->ended, ==, 0); g_assert_cmpuint (f->jobs->len, ==, 0);
+    if (!cancel_at_edge)
+    {
+        dnd_move_to (d, GTK_WIDGET (scroller), gtk_widget_get_width (GTK_WIDGET (scroller)) / 2.0,
+                     gtk_widget_get_height (GTK_WIDGET (scroller)) / 2.0);
+        double stopped = gtk_adjustment_get_value (adjustment);
+        operations_pump (240);
+        g_assert_cmpfloat_with_epsilon (gtk_adjustment_get_value (adjustment), stopped, .1);
+        if (floating_bar != NULL) { g_assert_false (gtk_widget_get_visible (floating_bar)); }
+    }
+    gboolean copy_after_scroll = !vertical && !rtl && !cancel_at_edge;
+    NautilusFilesView *destination = NULL;
+    if (copy_after_scroll)
+    {
+        destination = operations_view_for_directory (f, f->root);
+        dnd_move_to (d, GTK_WIDGET (destination), gtk_widget_get_width (GTK_WIDGET (destination)) / 2.0,
+                     gtk_widget_get_height (GTK_WIDGET (destination)) * .78);
+    }
+    dnd_finish (d, GDK_ACTION_COPY, !copy_after_scroll);
+    if (floating_bar != NULL) { g_assert_true (gtk_widget_get_visible (floating_bar)); }
+    double cancelled_position = gtk_adjustment_get_value (adjustment);
+    operations_pump (300);
+    g_assert_cmpfloat_with_epsilon (gtk_adjustment_get_value (adjustment), cancelled_position, .1);
+    if (copy_after_scroll)
+    {
+        g_assert_cmpuint (d->accepted, ==, 1); g_assert_cmpuint (d->cancelled, ==, 0);
+        g_assert_cmpuint (d->action, ==, GDK_ACTION_COPY); g_assert_cmpuint (f->jobs->len, ==, 1);
+        g_assert_true (nautilus_progress_info_get_is_finished (f->jobs->pdata[0]));
+        g_assert_false (nautilus_progress_info_get_is_cancelled (f->jobs->pdata[0]));
+        g_autofree char *name = g_file_get_basename (f->source_file);
+        g_autoptr (GFile) result = g_file_get_child (f->root, name);
+        operations_wait_copy (f, destination, result);
+        operations_assert_bytes (f, result, MILLER_TEST_OPERATION_PAYLOAD);
+        GFile *untouched[] = { f->parent, f->child, f->sibling };
+        for (guint i = 0; i < G_N_ELEMENTS (untouched); i++)
+        {
+            g_autoptr (GFile) wrong = g_file_get_child (untouched[i], name);
+            g_assert_false (g_file_query_exists (wrong, NULL));
+        }
+        g_test_message ("Native copy after horizontal edge scrolling preserved exact ancestor destination and source bytes");
+    }
+    else
+    {
+        g_assert_cmpuint (d->accepted, ==, 0); g_assert_cmpuint (d->cancelled, ==, 1);
+        g_assert_cmpuint (f->jobs->len, ==, 0);
+    }
+    g_assert_true (g_file_equal (nautilus_window_slot_get_location (f->slot), f->source_dir));
+    g_assert_cmpuint (g_list_length (nautilus_window_slot_get_back_history (f->slot)), ==, history);
+    dnd_assert_source_selection (d, source);
+    operations_assert_bytes (f, f->source_file, MILLER_TEST_OPERATION_PAYLOAD);
+    operations_assert_sentinels (f);
+}
+
 int
 main (int argc, char **argv)
 {
+    if (argc == 4 && g_str_equal (argv[1], "--external-drag-source"))
+    {
+        return external_source_main (argv[2], argv[3]);
+    }
     g_test_init (&argc, &argv, NULL);
     if (g_getenv ("MILLER_TEST_SESSION") == NULL || g_getenv ("MILLER_TEST_HOME") == NULL) { return 77; }
     g_autoptr (GError) error = NULL;
@@ -736,6 +1262,27 @@ main (int argc, char **argv)
                 dnd_setup, test_old_drag_cannot_restore_new_drag, dnd_teardown);
     g_test_add ("/miller/dnd/late-origin-completion", DndFixture, GUINT_TO_POINTER (NAUTILUS_VIEW_MILLER_ID),
                 dnd_setup, test_late_origin_completion, dnd_teardown);
+#define EDGE(name) g_test_add ("/miller/dnd/" name, DndFixture, GUINT_TO_POINTER (NAUTILUS_VIEW_MILLER_ID), dnd_setup, test_drag_edge_scroll, dnd_teardown)
+    g_test_add ("/miller/dnd/grid-vertical-edge-scroll", DndFixture, GUINT_TO_POINTER (NAUTILUS_VIEW_GRID_ID),
+                dnd_setup, test_drag_edge_scroll, dnd_teardown);
+    g_test_add ("/miller/dnd/list-vertical-edge-scroll", DndFixture, GUINT_TO_POINTER (NAUTILUS_VIEW_LIST_ID),
+                dnd_setup, test_drag_edge_scroll, dnd_teardown);
+    EDGE ("vertical-edge-scroll");
+    EDGE ("horizontal-edge-scroll");
+    EDGE ("horizontal-edge-rtl");
+    EDGE ("edge-stop-on-cancel");
+    SPRING ("nested-spring-reveals-hover-pair");
+    SPRING ("nested-spring-reveals-hover-pair-rtl");
+    g_test_add ("/miller/dnd/between-tabs", DndFixture, GUINT_TO_POINTER (NAUTILUS_VIEW_MILLER_ID),
+                dnd_setup, test_drag_between_tabs, dnd_teardown);
+    g_test_add ("/miller/dnd/external-files-in", DndFixture, GUINT_TO_POINTER (NAUTILUS_VIEW_MILLER_ID),
+                dnd_setup, test_external_file_drag, dnd_teardown);
+    g_test_add ("/miller/dnd/external-spring-cancel", DndFixture, GUINT_TO_POINTER (NAUTILUS_VIEW_MILLER_ID),
+                dnd_setup, test_external_file_drag, dnd_teardown);
+    g_test_add ("/miller/dnd/external-spring-drop", DndFixture, GUINT_TO_POINTER (NAUTILUS_VIEW_MILLER_ID),
+                dnd_setup, test_external_file_drag, dnd_teardown);
+    g_test_add ("/miller/dnd/tab-closed-during-drag", DndFixture, GUINT_TO_POINTER (NAUTILUS_VIEW_MILLER_ID),
+                dnd_setup, test_tab_closed_during_drag, dnd_teardown);
     GMainContext *context = g_main_context_default (); g_assert_true (g_main_context_acquire (context));
     int result = g_test_run (); g_main_context_release (context);
     operations_set_input (NULL); miller_test_input_free (input); return result;

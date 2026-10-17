@@ -48,6 +48,8 @@ struct _NautilusFloatingBar
     guint hover_timeout_id;
 
     GtkEventController *motion_controller;
+    GtkEventController *drop_motion_controller;
+    gboolean hidden_for_drag;
     graphene_point_t pointer_in_parent_coordinates;
 };
 
@@ -102,6 +104,7 @@ nautilus_floating_bar_finalize (GObject *obj)
     g_free (self->primary_label);
     g_free (self->details_label);
     g_clear_object (&self->motion_controller);
+    g_clear_object (&self->drop_motion_controller);
 
     G_OBJECT_CLASS (nautilus_floating_bar_parent_class)->finalize (obj);
 }
@@ -254,7 +257,7 @@ check_pointer_timeout (gpointer user_data)
 }
 
 static void
-on_event_controller_motion_motion (GtkEventControllerMotion *controller,
+on_pointer_motion (GtkEventController *controller,
                                    double                    x,
                                    double                    y,
                                    gpointer                  user_data)
@@ -266,6 +269,20 @@ on_event_controller_motion_motion (GtkEventControllerMotion *controller,
 
     self->pointer_in_parent_coordinates.x = x;
     self->pointer_in_parent_coordinates.y = y;
+
+    if (GTK_IS_DROP_CONTROLLER_MOTION (controller))
+    {
+        /* Keep a non-interactive status overlay out of the drag's hit path
+         * before it reaches a narrow list edge. GTK then receives the first
+         * edge motion and supplies its existing native autoscroll. */
+        if (!self->is_interactive && gtk_widget_is_visible (GTK_WIDGET (self)))
+        {
+            nautilus_floating_bar_remove_hover_timeout (self);
+            self->hidden_for_drag = TRUE;
+            gtk_widget_set_visible (GTK_WIDGET (self), FALSE);
+        }
+        return;
+    }
 
     if (self->is_interactive || !gtk_widget_is_visible (GTK_WIDGET (self)))
     {
@@ -293,17 +310,22 @@ on_event_controller_motion_motion (GtkEventControllerMotion *controller,
                                                  check_pointer_timeout, data,
                                                  check_pointer_data_free);
 
-    g_source_set_name_by_id (self->hover_timeout_id, "[nautilus-floating-bar] on_event_controller_motion_motion");
+    g_source_set_name_by_id (self->hover_timeout_id, "[nautilus-floating-bar] on_pointer_motion");
 }
 
 static void
-on_event_controller_motion_leave (GtkEventControllerMotion *controller,
+on_pointer_leave (GtkEventController *controller,
                                   gpointer                  user_data)
 {
     NautilusFloatingBar *self = NAUTILUS_FLOATING_BAR (user_data);
 
     self->pointer_in_parent_coordinates.x = -1;
     self->pointer_in_parent_coordinates.y = -1;
+    if (GTK_IS_DROP_CONTROLLER_MOTION (controller) && self->hidden_for_drag)
+    {
+        self->hidden_for_drag = FALSE;
+        gtk_widget_set_visible (GTK_WIDGET (self), TRUE);
+    }
 }
 
 static void
@@ -316,32 +338,35 @@ on_parent_changed (GObject    *object,
 
     parent = gtk_widget_get_parent (GTK_WIDGET (object));
 
-    if (self->motion_controller != NULL)
+    GtkEventController **controllers[] = { &self->motion_controller, &self->drop_motion_controller };
+    for (guint i = 0; i < G_N_ELEMENTS (controllers); i++)
     {
-        GtkWidget *old_parent;
-
-        old_parent = gtk_event_controller_get_widget (self->motion_controller);
+        if (*controllers[i] == NULL) { continue; }
+        GtkWidget *old_parent = gtk_event_controller_get_widget (*controllers[i]);
         g_warn_if_fail (old_parent != NULL);
-        if (old_parent != NULL)
-        {
-            gtk_widget_remove_controller (old_parent, self->motion_controller);
-        }
-
-        g_object_unref (self->motion_controller);
-        self->motion_controller = NULL;
+        if (old_parent != NULL) { gtk_widget_remove_controller (old_parent, *controllers[i]); }
+        g_clear_object (controllers[i]);
     }
 
+    if (self->hidden_for_drag)
+    {
+        self->hidden_for_drag = FALSE;
+        gtk_widget_set_visible (GTK_WIDGET (self), TRUE);
+    }
     if (parent != NULL)
     {
         self->motion_controller = g_object_ref (gtk_event_controller_motion_new ());
-        gtk_widget_add_controller (parent, self->motion_controller);
-
-        gtk_event_controller_set_propagation_phase (self->motion_controller,
-                                                    GTK_PHASE_CAPTURE);
-        g_signal_connect (self->motion_controller, "leave",
-                          G_CALLBACK (on_event_controller_motion_leave), self);
-        g_signal_connect (self->motion_controller, "motion",
-                          G_CALLBACK (on_event_controller_motion_motion), self);
+        self->drop_motion_controller = g_object_ref (gtk_drop_controller_motion_new ());
+        g_signal_connect (self->drop_motion_controller, "enter", G_CALLBACK (on_pointer_motion), self);
+        for (guint i = 0; i < G_N_ELEMENTS (controllers); i++)
+        {
+            gtk_widget_add_controller (parent, *controllers[i]);
+            gtk_event_controller_set_propagation_phase (*controllers[i], GTK_PHASE_CAPTURE);
+            /* Ordinary pointer hiding keeps its existing timer; native drags
+             * suppress the non-interactive overlay for their parent visit. */
+            g_signal_connect (*controllers[i], "leave", G_CALLBACK (on_pointer_leave), self);
+            g_signal_connect (*controllers[i], "motion", G_CALLBACK (on_pointer_motion), self);
+        }
     }
 }
 
