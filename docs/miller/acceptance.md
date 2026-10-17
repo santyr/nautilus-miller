@@ -7,10 +7,10 @@ Development branch: `finder-completion`; baseline `8618e792713ae6b248c4ca7d740ae
 | ID | Required scenario | Owning stage | Status | Revision / procedure / evidence |
 |---|---|---|---|---|
 | C01 | Late branch replacement | Stage 1/2 | Open | Development build passes actual delayed archive A→B with real keys; release-candidate acceptance remains. |
-| C02 | Paste/create in focused parent | Stage 1/4 | Open | Expanded acceptance pending; baseline evidence not sufficient. |
-| C03 | Empty-column destination and Left | Stage 1/4 | Open | Expanded acceptance pending; baseline evidence not sufficient. |
+| C02 | Paste/create in focused parent | Stage 1/4 | Open | Genuine parent Paste passes with child disclosed; [clipboard evidence](operations-verification.md). Genuine New Folder and component review/release gate remain. |
+| C03 | Empty-column destination and Left | Stage 1/4 | Open | Genuine Right/Paste/Left in empty child passes; [evidence](operations-verification.md). New Folder and component review/release gate remain. |
 | C04 | Captured context menu/dialog destination | Stage 1/4 | Open | Expanded acceptance pending; baseline evidence not sufficient. |
-| C05 | Real clipboard, conflicts, undo/redo | Stage 4 | Open | Expanded acceptance pending; baseline evidence not sufficient. |
+| C05 | Real clipboard, conflicts, undo/redo | Stage 4 | Open | Nine clipboard cases pass in each profile plus the full39/53/10/4/89 gate, including independent GTK source, delayed transfer across tabs, copy Undo/Redo and duplicate; [evidence](operations-verification.md). Native conflicts/other operations/component review/release remain. |
 | C06 | Nested spring-loaded drag/cancel | Stage 4 | Open | Expanded acceptance pending; baseline evidence not sufficient. |
 | C07 | Safe stale-proof inline preview | Stage 3 | Open | Development inspector53/53, native UI15/15 and whole-preview review/corrections pass; release/real-remote acceptance remains. |
 | C08 | External preview both profiles/restart | Stage 1/3 | Open | Actual Sushi13 scenarios per profile and whole-preview review/corrections pass, including deselection/removal; release acceptance remains. |

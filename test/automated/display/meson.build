@@ -1,4 +1,5 @@
 tests = {
+  'test-miller-operations': {'is_parallel': false, 'env': ['GTK_A11Y=test']},
   'test-miller-view': {'is_parallel': false, 'env': ['GTK_A11Y=test']},
   'test-miller-state': {'is_parallel': false, 'env': ['GTK_A11Y=test']},
   'test-miller-preview-ui': {'is_parallel': false, 'env': ['GTK_A11Y=test']},
