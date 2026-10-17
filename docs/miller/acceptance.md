@@ -1,5 +1,12 @@
 # Completion acceptance ledger
 
+## Current scope amendment — 2026-10-17
+
+The user has explicitly refocused the [active goal](finder-completion-goal.md): Nautilus supplies the file-manager functionality; Miller is an alternate hierarchy view. The C01–C16 ledger below is retained as historical evidence and planning context. Its expanded backend, benchmark, certification and exact-count gates no longer independently control deployment readiness. Unexecuted items are untested/deferred, not passed.
+
+Current completion checks are: native reuse audit; coherent column navigation/selection/focus/history/layout; correctly targeted native operations and drag/clipboard integration at affected boundaries; focused preview/extension compatibility; relevant accessibility/responsiveness and owner cleanup; fresh component/release regressions; and traceable packages with a safe installation/rollback handoff. Use existing direct evidence for unchanged paths and add tests for demonstrated or uncovered column integration risks. Actual host installation remains a separate authorization.
+
+
 Full authority: [goal](finder-completion-goal.md). Historical results stay in [verification](verification.md); no historical pass closes an expanded requirement without new evidence. Status **open** means incomplete, not failed or unsupported. **Blocked** requires a concrete missing environment and is never a pass.
 
 Development branch: `finder-completion`; baseline `8618e792713ae6b248c4ca7d740ae78ce9d3040b`. Worktree `.worktrees/finder-completion`. Installed package at start: `nautilus-50.4-1.miller1.fc44`; no production changes authorized by this goal.

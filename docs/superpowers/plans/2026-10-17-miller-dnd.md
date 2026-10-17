@@ -1,5 +1,8 @@
 # Miller native drag-and-drop implementation plan
 
+> **Scope amendment — 2026-10-17:** The user explicitly narrowed the goal to an alternate Nautilus view that reuses existing functionality. [Current goal](../../miller/finder-completion-goal.md) supersedes conflicting exhaustive gates below. Completed work/evidence is retained. Remaining DnD work targets column-specific native integration and demonstrated defects; original mandatory case counts, backend matrices and repeated full gates are historical planning targets, not current release requirements. No unexecuted case is counted as passed.
+
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan inline, task-by-task. No per-task agents; one fresh whole-component reviewer after implementation.
 
 **Goal:** Verify and complete genuine native file drags, temporary spring-loaded columns and edge scrolling without losing source identity, selection, focus or history.
@@ -91,3 +94,11 @@ The complete gate runs both full40-executable Meson suites through the establish
 ### Execution adjustment: native Wayland action capability
 
 Task1's initial LINK-result expectation failed identically in Grid, List and Columns: Ctrl+Shift negotiated native MOVE. The Wayland data-device action enum supports COPY/MOVE/ASK, with no LINK. Keep native negotiation; do not turn a protocol MOVE into a different operation. Replace the mistaken link-result case with real link-unavailable-wayland attempts in all3 modes, observing non-LINK negotiation then genuine Escape with zero jobs and original bytes preserved. Existing native Create Link clipboard commands remain separately tested. Task1 count11; Task2 count19; Task3 count33. Full X11 or a future protocol extension is not claimed.
+
+### Execution adjustment: native vertical controls
+
+Task3 adds actual Grid/List vertical controls alongside Columns. The initial Columns pointer hit the outer horizontal overlay scrollbar rather than the list. Retain the diagnostic failure; use a point24px inside GTK's native30px list edge and prove the picked widget belongs to the source list and shares its vertical adjustment. These controls increase final DnD cases from33 to35; all original14 Task3 workflows and operations64 remain mandatory. No vertical scrolling engine is added.
+
+### Execution adjustment: deeper hover visibility
+
+Add genuine third-hover/pair-visible cases in LTR and RTL. Actual loaded models alone do not establish that each newly disclosed directory is reachable on screen. Verify both pair members inside the viewport before the next actual hover, preserve original source selection/action focus and exact cancel snapshot, and use the existing minimal reveal implementation for any reproduced defect. These two additions raise the final DnD target35→37; all original14 Task3 workflows and operations64 remain mandatory.

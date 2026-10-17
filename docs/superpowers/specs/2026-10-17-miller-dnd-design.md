@@ -1,5 +1,8 @@
 # Miller native drag browsing design
 
+> **Scope amendment — 2026-10-17:** The user explicitly narrowed the goal to an alternate Nautilus view that reuses existing functionality. [Current goal](../../miller/finder-completion-goal.md) supersedes conflicting exhaustive gates below. Completed work/evidence is retained. Remaining DnD work targets column-specific native integration and demonstrated defects; original mandatory case counts, backend matrices and repeated full gates are historical planning targets, not current release requirements. No unexecuted case is counted as passed.
+
+
 Authority: the approved finder-completion-goal.md, especially sections3,6,7,8,9 and C04/C05/C06/C10/C16. This adds a reversible interaction policy within the existing native architecture. It grants no deployment authority.
 
 ## Intent and constraints
