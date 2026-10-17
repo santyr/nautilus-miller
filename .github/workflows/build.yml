@@ -34,14 +34,20 @@ jobs:
             prefix: /home/miller/.local/opt/nautilus-miller
     env:
       LANG: C.UTF-8
+      XDG_SESSION_TYPE: wayland
+      GSK_RENDERER: cairo
       PROFILE: ${{ matrix.profile }}
       PREFIX: ${{ matrix.prefix }}
     steps:
       - name: Install checkout and existing harness dependencies
-        run: dnf -y install dnf5-plugins rpm-build git tar python3-gobject bubblewrap dbus-daemon mutter glibc-langpack-en mesa-dri-drivers xdg-desktop-portal-gnome gvfs-archive
+        run: dnf -y install dnf5-plugins rpm-build git tar python3-gobject bubblewrap dbus-daemon mutter glibc-langpack-en mesa-dri-drivers xdg-desktop-portal-gnome gvfs-archive glycin-thumbnailer gst-thumbnailers xdg-utils
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install native Fedora build dependencies
         run: dnf -y builddep packaging/fedora/nautilus-miller.spec
+      - name: Start the container platform bus
+        run: |
+          mkdir -p /run/dbus
+          dbus-daemon --system --fork
       - name: Prepare a nonroot canonical Home
         run: |
           useradd --create-home --shell /bin/bash miller
