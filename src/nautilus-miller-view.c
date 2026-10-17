@@ -55,6 +55,10 @@ struct _NautilusMillerView
     NautilusFilesView *active_view; /* borrowed from columns */
     GFile *user_location;
     GdkDrag *file_drag; /* Owned only through native drag completion. */
+    NautilusFilesView *drag_source_view; /* Retain the native source if pruned. */
+    GVariant *spring_state; /* Existing immutable snapshot, only while provisional. */
+    GtkDropControllerMotion *drag_motion; /* Borrowed; owned by scroller. */
+    guint spring_leave_idle;
     gboolean active;
     gboolean reconciling;
     guint scroll_tick;
@@ -68,6 +72,7 @@ struct _NautilusMillerView
     guint restore_tick, restore_stage;
     guint64 restore_generation;
     gboolean restoring, restore_focus;
+    gboolean drag_restore; /* Expected native focus return must not cancel its snapshot. */
 };
 G_DEFINE_TYPE (NautilusMillerView, nautilus_miller_view, ADW_TYPE_BIN)
 enum { ACTIVE_VIEW_CHANGED, LOCATION_CHANGING, LOCATION_REQUESTED, LAST_SIGNAL };
@@ -75,6 +80,7 @@ static guint signals[LAST_SIGNAL];
 
 static void reconcile (NautilusMillerView *self, GFile *location, NautilusFileList *selection, gboolean preserve_focus, gboolean reveal);
 static void cancel_restore (NautilusMillerView *self);
+static void clear_spring_state (NautilusMillerView *self);
 
 static MillerColumn *
 find_column (NautilusMillerView *self, NautilusFilesView *view, guint *position)
@@ -288,6 +294,7 @@ cancel_reveal (NautilusMillerView *self)
 static void
 cancel_restore (NautilusMillerView *self)
 {
+    self->drag_restore = FALSE;
     self->restore_generation++;
     if (self->restore_tick != 0)
     {
@@ -370,6 +377,7 @@ static void
 request_location (NautilusMillerView *self, GFile *location, gboolean preserve_focus, gboolean reveal)
 {
     g_autoptr (GFile) target = g_object_ref (location);
+    clear_spring_state (self);
     cancel_restore (self);
     g_signal_emit (self, signals[LOCATION_CHANGING], 0, target);
     g_set_object (&self->user_location, target);
@@ -464,6 +472,11 @@ activate_directory (NautilusFilesView *view, NautilusFile *file, MillerColumn *c
 static void
 focus_enter (GtkEventControllerFocus *controller, MillerColumn *column)
 {
+    NautilusMillerView *self = column->owner;
+    /* Ending the compositor drag grab restores cached focus asynchronously.
+     * It is not a new user navigation. Explicit clicks/keys still invalidate
+     * restoration through their existing input/selection handlers. */
+    if (self->drag_restore && self->restore_state != NULL && self->active_view == column->view) { return; }
     set_active_view (column->owner, column->view);
     guint position;
     if (find_column (column->owner, column->view, &position) != NULL)
@@ -480,6 +493,45 @@ focus_leave (GtkEventControllerFocus *controller, MillerColumn *column)
 }
 
 static void
+clear_spring_state (NautilusMillerView *self)
+{
+    g_clear_handle_id (&self->spring_leave_idle, g_source_remove);
+    g_clear_pointer (&self->spring_state, g_variant_unref);
+}
+
+static gboolean
+spring_leave_idle (gpointer data)
+{
+    NautilusMillerView *self = data;
+    self->spring_leave_idle = 0;
+    if (gtk_drop_controller_motion_contains_pointer (self->drag_motion) || self->spring_state == NULL)
+    {
+        return G_SOURCE_REMOVE;
+    }
+    g_autoptr (GVariant) state = g_steal_pointer (&self->spring_state);
+    nautilus_miller_view_restore_state (self, state, TRUE);
+    self->drag_restore = self->restore_state != NULL;
+    return G_SOURCE_REMOVE;
+}
+
+static void
+drag_strip_enter (GtkDropControllerMotion *controller, double x, double y, NautilusMillerView *self)
+{
+    g_clear_handle_id (&self->spring_leave_idle, g_source_remove);
+}
+
+static void
+drag_strip_leave (GtkDropControllerMotion *controller, NautilusMillerView *self)
+{
+    if (self->spring_state != NULL && self->spring_leave_idle == 0)
+    {
+        /* Defer until the native drop callback can report acceptance. Merely
+         * crossing the widget boundary must never accept or transfer files. */
+        self->spring_leave_idle = g_idle_add (spring_leave_idle, self);
+    }
+}
+
+static void
 clear_file_drag (NautilusMillerView *self)
 {
     if (self->file_drag != NULL)
@@ -487,12 +539,21 @@ clear_file_drag (NautilusMillerView *self)
         g_signal_handlers_disconnect_by_data (self->file_drag, self);
         g_clear_object (&self->file_drag);
     }
+    g_clear_object (&self->drag_source_view);
+    clear_spring_state (self);
 }
 
 static void
 file_drag_finished (GdkDrag *drag, NautilusMillerView *self)
 {
-    if (self->file_drag == drag) { clear_file_drag (self); }
+    if (self->file_drag != drag) { return; }
+    g_autoptr (GVariant) state = g_steal_pointer (&self->spring_state);
+    clear_file_drag (self);
+    if (state != NULL)
+    {
+        nautilus_miller_view_restore_state (self, state, TRUE);
+        self->drag_restore = self->restore_state != NULL;
+    }
 }
 
 static void
@@ -507,8 +568,38 @@ file_drag_started (NautilusListBase *list_base, GdkDrag *drag, MillerColumn *col
     NautilusMillerView *self = column->owner;
     clear_file_drag (self);
     self->file_drag = g_object_ref (drag);
+    self->drag_source_view = g_object_ref (column->view);
     g_signal_connect_object (drag, "dnd-finished", G_CALLBACK (file_drag_finished), self, 0);
     g_signal_connect_object (drag, "cancel", G_CALLBACK (file_drag_cancelled), self, 0);
+}
+
+static gboolean
+spring_load (NautilusListBase *list_base, NautilusFile *file, MillerColumn *column)
+{
+    NautilusMillerView *self = column->owner;
+    if (self->file_drag == NULL) { return FALSE; }
+    g_autoptr (GFile) location = nautilus_file_get_activation_location (file);
+    if (self->spring_state == NULL)
+    {
+        self->spring_state = nautilus_miller_view_capture_state (self, FALSE);
+        g_signal_emit (self, signals[LOCATION_CHANGING], 0, location);
+    }
+    cancel_restore (self);
+    reconcile (self, location, NULL, TRUE, TRUE);
+    return TRUE;
+}
+
+static void
+file_drop_accepted (NautilusListBase *list_base, GdkDrop *drop, GFile *destination, MillerColumn *column)
+{
+    NautilusMillerView *self = column->owner;
+    if (self->spring_state == NULL || gdk_drop_get_drag (drop) != self->file_drag) { return; }
+    /* Native acceptance commits navigation once. The existing file job keeps
+     * ownership of later conflict/error/cancellation behavior. */
+    g_autoptr (GFile) endpoint = g_object_ref (nautilus_miller_view_get_location (self));
+    clear_spring_state (self);
+    g_set_object (&self->user_location, endpoint);
+    g_signal_emit (self, signals[LOCATION_REQUESTED], 0, endpoint);
 }
 
 static void
@@ -857,6 +948,10 @@ column_new (NautilusMillerView *self, GFile *location)
     g_signal_connect (column->view, "column-activate-directory", G_CALLBACK (activate_directory), column);
     g_signal_connect (nautilus_files_view_get_private_list_base (column->view), "drag-begin",
                       G_CALLBACK (file_drag_started), column);
+    g_signal_connect (nautilus_files_view_get_private_list_base (column->view), "spring-load",
+                      G_CALLBACK (spring_load), column);
+    g_signal_connect (nautilus_files_view_get_private_list_base (column->view), "drop-accepted",
+                      G_CALLBACK (file_drop_accepted), column);
     gtk_box_append (self->strip, column->box);
     gtk_box_append (self->strip, column->grip);
     return column;
@@ -904,7 +999,7 @@ reconcile (NautilusMillerView *self, GFile *location, NautilusFileList *selectio
             nautilus_files_view_set_location (column->view, column->location);
             column->stopped = FALSE;
         }
-        if (child != NULL)
+        if (child != NULL && !(self->spring_state != NULL && column->view == self->drag_source_view))
         {
             GList branch_selection = { .data = child };
             nautilus_files_view_set_selection (column->view, &branch_selection, TRUE);
@@ -941,6 +1036,7 @@ reconcile (NautilusMillerView *self, GFile *location, NautilusFileList *selectio
 void
 nautilus_miller_view_set_location (NautilusMillerView *self, GFile *location, NautilusFileList *selection)
 {
+    clear_spring_state (self);
     cancel_restore (self);
     gboolean preserve = self->user_location != NULL && g_file_equal (self->user_location, location);
     g_clear_object (&self->user_location);
@@ -1108,6 +1204,7 @@ nautilus_miller_view_restore_state (NautilusMillerView *self, GVariant *state, g
     g_autoptr (NautilusMillerView) hold = g_object_ref (self);
     /* A caller may be handing back our currently pending immutable value. */
     g_autoptr (GVariant) retained = g_variant_ref (state);
+    clear_spring_state (self);
     cancel_restore (self);
     guint64 generation = self->restore_generation;
     cancel_reveal (self);
@@ -1288,6 +1385,12 @@ nautilus_miller_view_init (NautilusMillerView *self)
                              G_CALLBACK (typeahead_preference_changed), self, 0);
     gtk_scrolled_window_set_policy (self->scroller, GTK_POLICY_AUTOMATIC, GTK_POLICY_NEVER);
     gtk_scrolled_window_set_child (self->scroller, GTK_WIDGET (self->strip));
+    GtkEventController *drag_motion = gtk_drop_controller_motion_new ();
+    self->drag_motion = GTK_DROP_CONTROLLER_MOTION (drag_motion);
+    gtk_event_controller_set_propagation_phase (drag_motion, GTK_PHASE_CAPTURE);
+    g_signal_connect_object (drag_motion, "enter", G_CALLBACK (drag_strip_enter), self, 0);
+    g_signal_connect_object (drag_motion, "leave", G_CALLBACK (drag_strip_leave), self, 0);
+    gtk_widget_add_controller (GTK_WIDGET (self->scroller), drag_motion);
     GtkEventController *scroll = gtk_event_controller_scroll_new (GTK_EVENT_CONTROLLER_SCROLL_BOTH_AXES);
     gtk_event_controller_set_propagation_phase (scroll, GTK_PHASE_CAPTURE);
     g_signal_connect_object (scroll, "scroll", G_CALLBACK (manual_scroll), self, 0);

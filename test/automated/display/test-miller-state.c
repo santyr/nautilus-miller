@@ -20,6 +20,7 @@
 #include "nautilus-sidebar.h"
 #include "nautilus-sidebar-row.h"
 #include "miller-test-input.h"
+#include "miller-test-backend.h"
 #include <math.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -699,50 +700,6 @@ test_native_cached_special_loading (Fixture *f, gconstpointer unused)
     }
 }
 
-static GKeyFile *
-backend_metadata (void)
-{
-    const char *runtime = g_getenv ("XDG_RUNTIME_DIR");
-    g_autofree char *expected = g_build_filename (runtime, "miller-backend.ini", NULL);
-    g_assert_cmpstr (g_getenv ("MILLER_TEST_BACKEND"), ==, expected);
-    struct stat info;
-    g_assert_cmpint (lstat (expected, &info), ==, 0);
-    g_assert_true (S_ISREG (info.st_mode));
-    g_assert_cmpuint (info.st_uid, ==, getuid ());
-    g_assert_cmpuint (info.st_mode & 0777, ==, 0600);
-    GKeyFile *config = g_key_file_new ();
-    g_assert_true (g_key_file_load_from_file (config, expected, 0, NULL));
-    return config;
-}
-
-static void
-backend_control (const char *request)
-{
-    g_autoptr (GKeyFile) config = backend_metadata ();
-    g_autofree char *control = g_key_file_get_string (config, "backend", "control", NULL);
-    g_autofree char *expected = g_build_filename (g_getenv ("XDG_RUNTIME_DIR"), "miller-backend.sock", NULL);
-    g_assert_cmpstr (control, ==, expected);
-    struct stat info;
-    g_assert_cmpint (lstat (control, &info), ==, 0);
-    g_assert_true (S_ISSOCK (info.st_mode));
-    g_assert_cmpuint (info.st_uid, ==, getuid ());
-    g_assert_cmpuint (info.st_mode & 0777, ==, 0600);
-    g_autoptr (GSocketClient) client = g_socket_client_new ();
-    g_socket_client_set_timeout (client, 5);
-    g_autoptr (GSocketAddress) address = g_unix_socket_address_new (control);
-    g_autoptr (GError) error = NULL;
-    g_autoptr (GSocketConnection) connection = g_socket_client_connect (client, G_SOCKET_CONNECTABLE (address), NULL, &error);
-    g_assert_no_error (error);
-    g_autofree char *line = g_strconcat (request, "\n", NULL);
-    g_assert_true (g_output_stream_write_all (g_io_stream_get_output_stream (G_IO_STREAM (connection)),
-                                             line, strlen (line), NULL, NULL, &error));
-    g_assert_no_error (error);
-    g_autoptr (GDataInputStream) reply = g_data_input_stream_new (g_io_stream_get_input_stream (G_IO_STREAM (connection)));
-    g_autofree char *result = g_data_input_stream_read_line (reply, NULL, NULL, &error);
-    g_assert_no_error (error);
-    g_assert_cmpstr (result, ==, "ok");
-}
-
 static GFile *
 open_backend (Fixture *f)
 {
@@ -751,7 +708,7 @@ open_backend (Fixture *f)
         g_test_skip ("Requires with-delayed-backend.py in the guarded private compositor");
         return NULL;
     }
-    g_autoptr (GKeyFile) config = backend_metadata ();
+    g_autoptr (GKeyFile) config = miller_test_backend_metadata ();
     g_autofree char *uri = g_key_file_get_string (config, "backend", "root-uri", NULL);
     GFile *root = g_file_new_for_uri (uri);
     g_assert_true (g_file_has_uri_scheme (root, "archive"));
@@ -768,7 +725,7 @@ test_delayed_branch (Fixture *f, gconstpointer unused)
     NautilusFilesView *parent = nautilus_window_slot_get_current_view (f->slot);
     g_autoptr (GFile) a = g_file_get_child (root, "A");
     g_autoptr (GFile) b = g_file_get_child (root, "B");
-    backend_control ("pause");
+    miller_test_backend_control ("pause");
     key (GDK_KEY_a, TRUE); key (GDK_KEY_a, FALSE); pump (150);
     assert_selection (parent, a);
     NautilusFilesView *old = find_view (GTK_WIDGET (f->strip), a);
@@ -780,7 +737,7 @@ test_delayed_branch (Fixture *f, gconstpointer unused)
     assert_selection (parent, b);
     g_assert_true (g_file_equal (nautilus_miller_view_get_location (f->strip), b));
     g_assert_null (find_view (GTK_WIDGET (f->strip), a));
-    backend_control ("resume"); settle_native (f);
+    miller_test_backend_control ("resume"); settle_native (f);
     g_assert_null (old);
     g_assert_true (g_file_equal (nautilus_window_slot_get_location (f->slot), b));
     g_assert_true (nautilus_window_slot_get_current_view (f->slot) == parent);
@@ -803,12 +760,12 @@ test_delayed_monitor_creation (Fixture *f, gconstpointer unused)
     g_autoptr (GFile) root = open_backend (f);
     if (root == NULL) { return; }
     g_autoptr (GFile) a = g_file_get_child (root, "A");
-    backend_control ("pause");
+    miller_test_backend_control ("pause");
     gint64 start = g_get_monotonic_time ();
     NautilusMonitor *monitor = nautilus_monitor_directory (a);
     gint64 elapsed = g_get_monotonic_time () - start;
     nautilus_monitor_cancel (monitor);
-    backend_control ("resume");
+    miller_test_backend_control ("resume");
     g_assert_cmpint (elapsed, <, 250 * G_TIME_SPAN_MILLISECOND);
     pump (150);
 }
@@ -819,14 +776,14 @@ test_delayed_navigation (Fixture *f, gconstpointer unused)
     g_autoptr (GFile) root = open_backend (f);
     if (root == NULL) { return; }
     g_autoptr (GFile) a = g_file_get_child (root, "A");
-    backend_control ("pause");
+    miller_test_backend_control ("pause");
     key (GDK_KEY_a, TRUE); key (GDK_KEY_a, FALSE); pump (100);
     NautilusFilesView *old = find_view (GTK_WIDGET (f->strip), a);
     g_assert_nonnull (old);
     g_assert_true (nautilus_files_view_get_loading (old));
     g_object_add_weak_pointer (G_OBJECT (old), (gpointer *) &old);
     nautilus_window_slot_open_location_full (f->slot, f->other, NULL);
-    backend_control ("resume"); settle_native (f);
+    miller_test_backend_control ("resume"); settle_native (f);
     g_assert_null (old);
     g_assert_true (g_file_equal (nautilus_window_slot_get_location (f->slot), f->other));
     g_assert_true (g_file_equal (nautilus_files_view_get_location (
@@ -850,7 +807,7 @@ test_delayed_close (Fixture *f, gconstpointer unused)
     g_object_set (f->window, "active-slot", f->slot, NULL); pump (100);
     g_autoptr (GFile) root = open_backend (f);
     g_autoptr (GFile) a = g_file_get_child (root, "A");
-    backend_control ("pause");
+    miller_test_backend_control ("pause");
     key (GDK_KEY_a, TRUE); key (GDK_KEY_a, FALSE); pump (100);
     g_assert_true (nautilus_files_view_get_loading (find_view (GTK_WIDGET (f->strip), a)));
     NautilusWindowSlot *closed = f->slot;
@@ -858,7 +815,7 @@ test_delayed_close (Fixture *f, gconstpointer unused)
     g_clear_object (&f->strip);
     key (GDK_KEY_Control_L, TRUE); key (GDK_KEY_w, TRUE); key (GDK_KEY_w, FALSE); key (GDK_KEY_Control_L, FALSE);
     g_set_object (&f->slot, survivor);
-    backend_control ("resume"); settle_native (f);
+    miller_test_backend_control ("resume"); settle_native (f);
     g_assert_null (closed);
     g_assert_true (nautilus_window_slot_get_active (survivor));
     g_assert_true (g_file_equal (nautilus_window_slot_get_location (survivor), f->other));
@@ -1227,7 +1184,7 @@ test_navigation_mount (Fixture *f, gconstpointer unused)
         g_test_skip ("Requires the actual private GVfs mount fixture too");
         return;
     }
-    g_autoptr (GKeyFile) config = backend_metadata ();
+    g_autoptr (GKeyFile) config = miller_test_backend_metadata ();
     g_autofree char *uri = g_key_file_get_string (config, "backend", "root-uri", NULL);
     g_autoptr (GFile) root = g_file_new_for_uri (uri);
     g_autoptr (GVolumeMonitor) monitor = g_volume_monitor_get ();

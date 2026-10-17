@@ -72,6 +72,8 @@ enum
 {
     ACTIVATE_SELECTION,
     DRAG_BEGIN,
+    SPRING_LOAD,
+    DROP_ACCEPTED,
     PERFORM_DROP,
     POPUP_BACKGROUND_CONTEXT_MENU,
     POPUP_SELECTION_CONTEXT_MENU,
@@ -515,6 +517,12 @@ hover_timer (gpointer user_data)
         return G_SOURCE_REMOVE;
     }
 
+    /* A multi-directory host can disclose without changing the drag source
+     * selection. Flat views keep the existing selection/activation path. */
+    gboolean handled = FALSE;
+    g_signal_emit (self, signals[SPRING_LOAD], 0, file, &handled);
+    if (handled) { return G_SOURCE_REMOVE; }
+
     NautilusViewModel *model = nautilus_list_base_get_model (self);
     guint i = nautilus_view_cell_get_position (cell);
 
@@ -772,9 +780,14 @@ on_item_drop (GtkDropTarget *target,
     /* In x11 the leave signal isn't emitted on a drop so we need to clear the timeout */
     g_clear_handle_id (&priv->hover_timer_id, g_source_remove);
 
+    g_autoptr (GdkDrop) drop = g_object_ref (gtk_drop_target_get_current_drop (target));
     g_signal_emit (self, signals[PERFORM_DROP], 0,
                    value, actions, target_location,
                    &accepted);
+    if (accepted)
+    {
+        g_signal_emit (self, signals[DROP_ACCEPTED], 0, drop, target_location);
+    }
     return accepted;
 }
 
@@ -873,9 +886,14 @@ on_view_drop (GtkDropTarget *target,
     }
     #endif
 
+    g_autoptr (GdkDrop) drop = g_object_ref (gtk_drop_target_get_current_drop (target));
     g_signal_emit (self, signals[PERFORM_DROP], 0,
                    value, actions, target_location,
                    &accepted);
+    if (accepted)
+    {
+        g_signal_emit (self, signals[DROP_ACCEPTED], 0, drop, target_location);
+    }
     return accepted;
 }
 
@@ -1321,6 +1339,14 @@ nautilus_list_base_class_init (NautilusListBaseClass *klass)
                                        G_SIGNAL_RUN_LAST, 0,
                                        NULL, NULL, NULL,
                                        G_TYPE_NONE, 1, GDK_TYPE_DRAG);
+    signals[SPRING_LOAD] = g_signal_new ("spring-load",
+                                        G_TYPE_FROM_CLASS (klass), G_SIGNAL_RUN_LAST, 0,
+                                        g_signal_accumulator_true_handled, NULL, NULL,
+                                        G_TYPE_BOOLEAN, 1, NAUTILUS_TYPE_FILE);
+    signals[DROP_ACCEPTED] = g_signal_new ("drop-accepted",
+                                          G_TYPE_FROM_CLASS (klass), G_SIGNAL_RUN_LAST, 0,
+                                          NULL, NULL, NULL,
+                                          G_TYPE_NONE, 2, GDK_TYPE_DROP, G_TYPE_FILE);
     signals[PERFORM_DROP] = g_signal_new ("perform-drop",
                                           G_TYPE_FROM_CLASS (klass),
                                           G_SIGNAL_RUN_LAST,

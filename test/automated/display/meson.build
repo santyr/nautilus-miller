@@ -1,10 +1,10 @@
 tests = {
-  'test-miller-dnd': {'is_parallel': false, 'env': ['GTK_A11Y=test'], 'sources': files('../miller-test-operations.c')},
+  'test-miller-dnd': {'is_parallel': false, 'env': ['GTK_A11Y=test'], 'sources': files('../miller-test-operations.c', '../miller-test-backend.c')},
   'test-miller-operations': {'is_parallel': false, 'env': ['GTK_A11Y=test'], 'sources': files('../miller-test-operations.c')},
   'test-miller-view': {'is_parallel': false, 'env': ['GTK_A11Y=test']},
-  'test-miller-state': {'is_parallel': false, 'env': ['GTK_A11Y=test']},
+  'test-miller-state': {'is_parallel': false, 'env': ['GTK_A11Y=test'], 'sources': files('../miller-test-backend.c')},
   'test-miller-preview-ui': {'is_parallel': false, 'env': ['GTK_A11Y=test']},
-  'test-miller-preview': {'is_parallel': false, 'env': ['GTK_A11Y=test']},
+  'test-miller-preview': {'is_parallel': false, 'env': ['GTK_A11Y=test'], 'sources': files('../miller-test-backend.c')},
   'test-miller-input': {'is_parallel': false, 'env': ['GTK_A11Y=test']},
   'test-miller-typeahead-engine': {'is_parallel': false, 'env': ['GTK_A11Y=test']},
   'test-miller-typeahead-ui': {'is_parallel': false, 'env': ['GTK_A11Y=test', 'GTK_IM_MODULE=simple']},

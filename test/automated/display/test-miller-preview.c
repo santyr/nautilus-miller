@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include <test-utilities.h>
+#include "miller-test-backend.h"
 #include <glib/gstdio.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -446,25 +447,6 @@ test_replacement (Fixture *f, gconstpointer kind)
     g_assert_nonnull (find_label (GTK_WIDGET (f->preview), "changed"));
 }
 
-static GKeyFile *
-backend_state (void)
-{
-    const char *marker = g_getenv ("MILLER_TEST_BACKEND");
-    g_autofree char *expected = g_build_filename (g_get_user_runtime_dir (), "miller-backend.ini", NULL);
-    g_assert_cmpstr (marker, ==, expected);
-    struct stat info;
-    g_assert_cmpint (g_lstat (marker, &info), ==, 0);
-    g_assert_true (S_ISREG (info.st_mode));
-    g_assert_cmpuint (info.st_uid, ==, getuid ());
-    g_assert_cmpuint (info.st_mode & 0777, ==, 0600);
-    GKeyFile *state = g_key_file_new ();
-    g_assert_true (g_key_file_load_from_file (state, marker, G_KEY_FILE_NONE, NULL));
-    g_autofree char *control = g_key_file_get_string (state, "backend", "control", NULL);
-    g_autofree char *expected_control = g_build_filename (g_get_user_runtime_dir (), "miller-backend.sock", NULL);
-    g_assert_cmpstr (control, ==, expected_control);
-    return state;
-}
-
 static GFile *
 backend_file (GKeyFile *state)
 {
@@ -475,27 +457,10 @@ backend_file (GKeyFile *state)
 }
 
 static void
-backend_control (GKeyFile *state, const char *command)
-{
-    g_autofree char *path = g_key_file_get_string (state, "backend", "control", NULL);
-    g_autoptr (GSocketClient) client = g_socket_client_new ();
-    g_socket_client_set_timeout (client, 3);
-    g_autoptr (GSocketAddress) address = g_unix_socket_address_new (path);
-    g_autoptr (GSocketConnection) connection = g_socket_client_connect (client, G_SOCKET_CONNECTABLE (address), NULL, NULL);
-    g_assert_nonnull (connection);
-    GOutputStream *output = g_io_stream_get_output_stream (G_IO_STREAM (connection));
-    g_autofree char *line = g_strconcat (command, "\n", NULL);
-    g_assert_true (g_output_stream_write_all (output, line, strlen (line), NULL, NULL, NULL));
-    g_autoptr (GDataInputStream) input = g_data_input_stream_new (g_io_stream_get_input_stream (G_IO_STREAM (connection)));
-    g_autofree char *response = g_data_input_stream_read_line (input, NULL, NULL, NULL);
-    g_assert_cmpstr (response, ==, "ok");
-}
-
-static void
 test_remote_off (Fixture *f, gconstpointer unused)
 {
     if (g_getenv ("MILLER_TEST_BACKEND") == NULL) { g_test_skip ("Requires the actual private archive fixture"); return; }
-    g_autoptr (GKeyFile) state = backend_state ();
+    g_autoptr (GKeyFile) state = miller_test_backend_metadata ();
     g_autoptr (GFile) file = backend_file (state);
     select_one (f, file); settle (f);
     g_autofree char *text = preview_text (f);
@@ -507,7 +472,7 @@ static void
 test_remote_enabled (Fixture *f, gconstpointer unused)
 {
     if (g_getenv ("MILLER_TEST_BACKEND") == NULL) { g_test_skip ("Requires the actual private archive fixture"); return; }
-    g_autoptr (GKeyFile) state = backend_state ();
+    g_autoptr (GKeyFile) state = miller_test_backend_metadata ();
     g_autoptr (GFile) file = backend_file (state);
     g_settings_set_boolean (nautilus_preferences, "miller-preview-remote", TRUE);
     g_settings_set_enum (nautilus_preferences, NAUTILUS_PREFERENCES_SHOW_FILE_THUMBNAILS, NAUTILUS_SPEED_TRADEOFF_LOCAL_ONLY);
@@ -529,7 +494,7 @@ static void
 test_remote_bounded (Fixture *f, gconstpointer unused)
 {
     if (g_getenv ("MILLER_TEST_BACKEND") == NULL) { g_test_skip ("Requires the actual private archive fixture with --preview-content"); return; }
-    g_autoptr (GKeyFile) state = backend_state ();
+    g_autoptr (GKeyFile) state = miller_test_backend_metadata ();
     if (!g_key_file_get_boolean (state, "backend", "preview-content", NULL))
     {
         g_test_skip ("Requires --preview-content"); return;
@@ -552,7 +517,7 @@ static void
 test_remote_image (Fixture *f, gconstpointer unused)
 {
     if (g_getenv ("MILLER_TEST_BACKEND") == NULL) { g_test_skip ("Requires the actual private archive fixture with --preview-content"); return; }
-    g_autoptr (GKeyFile) state = backend_state ();
+    g_autoptr (GKeyFile) state = miller_test_backend_metadata ();
     if (!g_key_file_get_boolean (state, "backend", "preview-content", NULL))
     {
         g_test_skip ("Requires --preview-content"); return;
@@ -580,10 +545,10 @@ static void
 test_backend_deadline (Fixture *f, gconstpointer unused)
 {
     if (g_getenv ("MILLER_TEST_BACKEND") == NULL) { g_test_skip ("Requires the actual private archive fixture with --pause-seconds 8"); return; }
-    g_autoptr (GKeyFile) state = backend_state ();
+    g_autoptr (GKeyFile) state = miller_test_backend_metadata ();
     g_assert_cmpint (g_key_file_get_integer (state, "backend", "pause-seconds", NULL), ==, 8);
     g_autoptr (GFile) file = backend_file (state);
-    backend_control (state, "pause");
+    miller_test_backend_control ("pause");
     gint64 start = g_get_monotonic_time ();
     select_one (f, file);
     gint64 deadline = start + 7 * G_TIME_SPAN_SECOND;
@@ -602,7 +567,7 @@ test_backend_deadline (Fixture *f, gconstpointer unused)
     g_autofree char *status = NULL;
     g_assert_true (g_file_get_contents (status_path, &status, NULL, NULL));
     g_assert_nonnull (strstr (status, "T (stopped)"));
-    backend_control (state, "resume");
+    miller_test_backend_control ("resume");
     select_one (f, f->first); settle (f);
     g_autofree char *text = preview_text (f);
     g_assert_cmpstr (text, ==, "alpha");

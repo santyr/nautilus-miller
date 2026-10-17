@@ -6,7 +6,7 @@ Authority: [completion goal](finder-completion-goal.md), sections 3–9. This co
 
 | State | Owner | Invariant |
 |---|---|---|
-| Logical lexical branch | Miller path, hosted by one window slot | Endpoint owns location/history, not every action destination. Never canonicalize symlinks or cross URI authority. |
+| Logical lexical branch | Miller path, hosted by one window slot | Committed endpoint owns location/history, not every action destination. An owned drag may temporarily disclose another branch as described below. Never canonicalize symlinks or cross URI authority. |
 | Active column | One strip per slot | At most one FilesView publishes window file actions. Inactive tabs publish none. |
 | Keyboard focus | GTK | Disclosure and preview updates cannot grab focus; entries, IMEs, menus and dialogs keep their keys. |
 | Branch marker | Parent column | Identifies the path to the child; must not replace newer user selection. |
@@ -45,6 +45,16 @@ Use 280 px default directory width, 180–1200 px bounds; independent preview wi
 The bounded prefix is256 Unicode characters and clears after1second of inactivity outside preedit, including cancellation of an older pending match. Backspace removes one grapheme; Escape clears. Comparisons use NFKC and Unicode case folding without changing file identities. The first matching loaded row in current sort order wins. Each idle checks at most256 rows or4ms; no directory enumeration or remote content fetch is added. A plain accessible hint shows prefix/preedit/no-match state. New selection, location, action column, tab, focus departure, settings changes and disposal cancel owned work.
 
 Selection-driven navigation also captures the action generation at the original model change. A later Right/focus navigation invalidates delayed parent notifications before either idle boundary, so the child keeps action ownership.
+
+## Drag browsing
+
+GTK/Nautilus own file payloads, source selection preparation, action negotiation, drop destinations and native jobs. The pointer destination is independent of the active action column. Columns retains its current native source through completion; selection notifications during that drag cannot collapse its visible destination.
+
+Folder disclosure uses the existing native hover preference and timeout. During a local native drag, Miller handles that disclosure before native hover replaces selection. It captures its existing immutable browsing snapshot and preserves the committed origin bookmark. Actual temporary FilesViews may extend or replace the displayed branch while the slot's location/history remain committed to the origin. The original source selection and cached keyboard destination remain unchanged. A newer disclosure also cancels any older unresolved slot navigation through the existing native location-change cleanup, so genuinely late metadata cannot publish the obsolete branch.
+
+Cancel/rejection or leaving the strip restores the saved snapshot. Leave restoration is deferred until native drop acceptance can win and is cancelled on reentry. The compositor's expected same-source focus return does not invalidate pending drag restoration; explicit input and newer navigation still do. Accepted native input retains the disclosed endpoint and requests at most one ordinary navigation. Later native job conflicts/errors/cancellation follow the native operation policy. Newer navigation invalidates the obsolete snapshot; an old drag's remaining callback cannot restore it over a newer drag or branch.
+
+Current development evidence covers local source/target drags and a genuinely delayed older GVfs navigation. Foreign-source spring disclosure, scrolling, tabs/windows/sidebar/volumes, unmap/removal stress and actual remote disconnects retain separate required acceptance. Native Wayland exposes COPY/MOVE/ASK without LINK; the supported native Create Link commands remain the link workflow.
 
 ## Preview policy
 

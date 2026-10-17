@@ -43,6 +43,8 @@ The focused column owns ordinary file actions. Paste, New Folder, New Document a
 
 Conflict, error, permission, cancellation and Trash availability follow Nautilus's native behavior. On the tested Wayland session, Ctrl+Shift drag negotiates Move; the protocol has no Link action. Use the native Create Link commands above for links. The current host lacks Console (`kgx`); its private provider contract has development coverage. Extension/OpenPGP and drag-and-drop acceptance remain open. See [operation evidence and limitations](docs/miller/operations-verification.md) for actual tested workflows; these development changes have not replaced the installed RPM.
 
+In development builds, dragging over a folder can disclose temporary columns while preserving the dragged selection. Canceling or leaving the column strip restores the prior branch; an accepted drop keeps the disclosed destination. Copy/move behavior and conflict handling remain native. Broader drag acceptance is still in progress; see [drag verification](docs/miller/dnd-verification.md).
+
 ## Build and run on Fedora 44
 
 ```sh

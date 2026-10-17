@@ -3106,6 +3106,10 @@ miller_location_changing (NautilusMillerView *miller, GFile *location, NautilusW
     {
         save_miller_state (self, TRUE);
     }
+    /* A newer branch interaction supersedes an unresolved native navigation,
+     * including when the branch is provisional during a drag. Reuse the
+     * existing cancellation of that pending location and its ready callback. */
+    if (self->pending_location != NULL) { end_location_change (self); }
 }
 
 static void
