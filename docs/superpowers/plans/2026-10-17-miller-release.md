@@ -33,11 +33,11 @@ Files: `packaging/fedora/nautilus-miller.spec`, `README.miller.md`, `docs/miller
 Consumes: green DnD correction checkpoint and reviewed existing components.
 Produces: clean source commit; main/extensions/devel and source RPMs under `build-rpm`; `source-commit.txt` and SHA256 manifest.
 
-- [ ] Inspect current spec and installed version; record old miller1 release/GNOME URL as the missing release metadata.
-- [ ] Increment Miller release, use public fork URL, replace obsolete desktop-icons description with the actual alternate-view scope; retain Fedora patches/dependencies and native packaging.
-- [ ] Build through `./tools/miller/build-rpm.sh`; require exit0 and all matching packages.
-- [ ] Inspect RPM NEVRAs, dependencies, files, canonical services/schema/desktop/extension ABI and source archive commit/checksums. Preserve private development profile check from the fresh regression checkpoint.
-- [ ] Record exact artifacts and commit; do not install them on the host.
+- [x] Inspect current spec and installed version; record old miller1 release/GNOME URL as the missing release metadata.
+- [x] Increment Miller release, use public fork URL, replace obsolete desktop-icons description with the actual alternate-view scope; retain Fedora patches/dependencies and native packaging.
+- [x] Build through `./tools/miller/build-rpm.sh`; require exit0 and all matching packages.
+- [x] Inspect RPM NEVRAs, dependencies, files, canonical services/schema/desktop/extension ABI and source archive commit/checksums. Preserve private development profile check from the fresh regression checkpoint.
+- [x] Record exact artifacts and commit; do not install them on the host.
 
 ## Task 2: GitHub CI over native tests
 
@@ -45,11 +45,11 @@ Files: `.github/workflows/build.yml`, `tools/miller/ci-test-wrapper.py` if neede
 Consumes: native Fedora dependencies and existing Meson tests/session/home helpers.
 Produces: build/test workflow for production and Miller profiles; uploaded Meson logs.
 
-- [ ] Record absence of workflow/observed runs before adding the adapter.
-- [ ] Use a disposable Fedora44 environment, nonroot canonical Home and source beneath Home. Install existing spec BuildRequires plus harness dependencies; build both profiles.
-- [ ] Reuse existing wrapper dispatch (input-guard direct, LocalSearch temporary cwd, all other filesystem/GUI tests under mounted disposable Home). Do not invent another runner or disable failing maintained cases.
-- [ ] Execute existing suites locally in the appropriate environment and retain logs. External-only suites remain separately recorded from ordinary Meson skips.
-- [ ] Review workflow permissions/triggers/log upload and report remote results only after an actual authorized run. If publication authorization is required, present the concrete branch/workflow/package state for approval as the final publication step.
+- [x] Record absence of workflow/observed runs before adding the adapter.
+- [x] Use a disposable Fedora44 environment, nonroot canonical Home and source beneath Home. Install existing spec BuildRequires plus harness dependencies; build both profiles.
+- [x] Reuse existing wrapper dispatch (input-guard direct, LocalSearch temporary cwd, all other filesystem/GUI tests under mounted disposable Home). Do not invent another runner or disable failing maintained cases.
+- [x] Execute existing suites locally in the appropriate environment and retain logs. External-only suites remain separately recorded from ordinary Meson skips.
+- [x] Review workflow permissions/triggers/log upload and report remote results only after an actual authorized run. If publication authorization is required, present the concrete branch/workflow/package state for approval as the final publication step.
 
 ## Task 3: Disposable package integration and focused remaining evidence
 
@@ -57,11 +57,11 @@ Files: `docs/miller/release-readiness.md`; owned ignored release artifacts/scrip
 Consumes: exact RPM set and signed stock rollback artifacts; rootless Fedora44 image.
 Produces: transaction log, before/fork/after identities and asset contracts; honest runtime limits.
 
-- [ ] In a disposable rootless container, install the exact signed stock main/extensions, then local fork set, then restore stock using DNF/RPM. Check package identities/integrity after every transaction. Do not reuse the host RPM database or writable user state.
-- [ ] Verify canonical desktop, schema, D-Bus interfaces and extension typelib/library assets from the installed fork. Native full-session service activation remains covered by private-host profile tests; a package-only container is not GNOME login/power-loss acceptance.
-- [ ] Preserve deployment failure-ordering/signature/offline/drain tests; identify unexercised full-desktop/reboot boundaries without claiming them tested.
-- [ ] Retain direct keyboard/accessibility-label/RTL evidence. Add `/miller/navigation/large-deep-responsive` to existing `test/automated/display/test-miller-state.c`, reusing its native Home guard, location-entry typing, model and key helpers: a real12-level branch with5000 regular files and one empty child, exact loaded model count, genuine Home/Right/Left input, actionable parent/empty child, and weak owner release after unrelated navigation/close. Record end-to-end entry/load time and main-context heartbeat gap as observations, not a new upstream benchmark or strict invented performance target. Run the focused case in both profiles with existing session/home wrappers; fix only a demonstrated integration defect. No new executable or fixture framework.
-- [ ] Report GPG/python module absence and outgoing foreign/real-remote limitations explicitly. Do not implement replacement providers.
+- [x] In a disposable rootless container, install the exact signed stock main/extensions, then local fork set, then restore stock using DNF/RPM. Check package identities/integrity after every transaction. Do not reuse the host RPM database or writable user state.
+- [x] Verify canonical desktop, schema, D-Bus interfaces and extension typelib/library assets from the installed fork. Native full-session service activation remains covered by private-host profile tests; a package-only container is not GNOME login/power-loss acceptance.
+- [x] Preserve deployment failure-ordering/signature/offline/drain tests; identify unexercised full-desktop/reboot boundaries without claiming them tested.
+- [x] Retain direct keyboard/accessibility-label/RTL evidence. Add `/miller/navigation/large-deep-responsive` to existing `test/automated/display/test-miller-state.c`, reusing its native Home guard, location-entry typing, model and key helpers: a real12-level branch with5000 regular files and one empty child, exact loaded model count, genuine Home/Right/Left input, actionable parent/empty child, and weak owner release after unrelated navigation/close. Record end-to-end entry/load time and main-context heartbeat gap as observations, not a new upstream benchmark or strict invented performance target. Run the focused case in both profiles with existing session/home wrappers; fix only a demonstrated integration defect. No new executable or fixture framework.
+- [x] Report GPG/python module absence and outgoing foreign/real-remote limitations explicitly. Do not implement replacement providers.
 
 ## Task 4: Concrete readiness report
 
@@ -69,10 +69,10 @@ Files: `docs/miller/release-readiness.md`, `docs/miller/acceptance.md`, user-fac
 Consumes: package identities, green maintained regressions, component review/corrections, CI evidence and transaction logs.
 Produces: reviewable host deployment handoff with no known Important column regression.
 
-- [ ] Reconcile every current-goal requirement to actual evidence or an explicit permitted limitation. Archive scratch evidence before cleanup.
-- [ ] Update current readiness table and exact miller2 install command; use the existing restore wrapper and preserved stock snapshot.
-- [ ] Verify clean source/provenance/checksum consistency and support QR; report package/source identity, tested native paths, material limitations and exact commands.
-- [ ] Keep host installation separate. Do not mark the goal achieved until all required handoff artifacts and focused evidence exist.
+- [x] Reconcile every current-goal requirement to actual evidence or an explicit permitted limitation. Archive scratch evidence before cleanup.
+- [x] Update current readiness table and exact miller2 install command; use the existing restore wrapper and preserved stock snapshot.
+- [x] Verify clean source/provenance/checksum consistency and support QR; report package/source identity, tested native paths, material limitations and exact commands.
+- [x] Keep host installation separate. Do not mark the goal achieved until all required handoff artifacts and focused evidence exist.
 
 ## Self-review
 

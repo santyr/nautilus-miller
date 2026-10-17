@@ -36,4 +36,4 @@ The fork retains the native Nautilus extension interfaces. See our [compatibilit
 
 ## Upstream attribution and license
 
-This project is derived from [GNOME Nautilus / Files](https://gitlab.gnome.org/GNOME/nautilus), initially release 50.4. The original authors’ copyright notices and GPL licensing remain in place; see [COPYING](COPYING). Upstream source and API links are provided for attribution and technical reference. This repository’s builds, changes and support belong to the Nautilus Miller personal project.
+This project is derived from [GNOME Nautilus / Files](https://gitlab.gnome.org/GNOME/nautilus), initially release 50.4. The original authors’ copyright notices and GPL licensing remain in place; see [LICENSE](LICENSE). Upstream source and API links are provided for attribution and technical reference. This repository’s builds, changes and support belong to the Nautilus Miller personal project.
