@@ -35,7 +35,7 @@ These are input/output/request limits, not a total process-memory ceiling or com
 
 ## Privacy and execution
 
-Remote content is off by default, including cached remote content. Opt-in also requires native thumbnails set to **All Files** and approval from Nautilus’s existing filesystem preview policy. GIO handles remote transport and cancellation; the inspector does not construct remote shell commands. The archive fixture establishes bounded transport behavior, not SFTP/SMB authentication, disconnect or monitoring acceptance.
+Remote content is off by default, including cached remote content and native paths on filesystems Nautilus identifies as remote. Regular-file content waits for Nautilus’s existing asynchronous filesystem-information readiness before applying that policy; native path representation alone is not treated as locality. Opt-in also requires native thumbnails set to **All Files** and approval from Nautilus’s existing filesystem preview policy. GIO handles remote transport and cancellation; the inspector does not construct remote shell commands. The archive fixture establishes bounded transport behavior, not SFTP/SMB authentication, disconnect or monitoring acceptance.
 
 Native reads reject final symlinks and special files using nonblocking/nofollow opening and descriptor identity checks, off the GTK thread. Inspection never activates a file, runs a desktop launcher, interprets markup in filenames or invokes commands built from filenames.
 

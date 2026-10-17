@@ -8,6 +8,7 @@
 #include <unistd.h>
 #include "nautilus-application.h"
 #include "nautilus-file.h"
+#include "nautilus-file-private.h"
 #include "nautilus-file-utilities.h"
 #include "nautilus-global-preferences.h"
 #include "nautilus-miller-preview.h"
@@ -1115,6 +1116,115 @@ test_unsupported_media (Fixture *f, gconstpointer unused)
     g_assert_null (gtk_picture_get_paintable (picture));
 }
 
+typedef struct
+{
+    Fixture *fixture;
+    NautilusFile *file;
+    guint mode;
+    gboolean scheduled, ran;
+} FilesystemTransition;
+
+static gboolean
+filesystem_transition_idle (gpointer data)
+{
+    FilesystemTransition *transition = data;
+    Fixture *f = transition->fixture;
+    /* Higher priority than the native filesystem completion. The metadata
+     * callback has returned after registering its real readiness request. */
+    g_assert_false (nautilus_file_check_if_ready (transition->file, NAUTILUS_FILE_ATTRIBUTE_FILESYSTEM_INFO));
+    transition->ran = TRUE;
+    if (transition->mode == 0) { gtk_widget_set_visible (GTK_WIDGET (f->preview), FALSE); }
+    else if (transition->mode == 1) { gtk_window_set_child (GTK_WINDOW (f->window), NULL); }
+    else { select_one (f, f->second); }
+    return G_SOURCE_REMOVE;
+}
+
+static void
+filesystem_transition_phase (GtkLabel *label, GParamSpec *pspec, FilesystemTransition *transition)
+{
+    if (!transition->scheduled && g_str_equal (gtk_label_get_text (label), "Checking preview availability…"))
+    {
+        transition->scheduled = TRUE;
+        g_idle_add_full (G_PRIORITY_HIGH, filesystem_transition_idle, transition, NULL);
+    }
+}
+
+static void
+test_filesystem_wait_transition (Fixture *f, gconstpointer mode)
+{
+    g_autoptr (NautilusFile) file = nautilus_file_get (f->first);
+    g_assert_false (nautilus_file_check_if_ready (file, NAUTILUS_FILE_ATTRIBUTE_FILESYSTEM_INFO));
+    FilesystemTransition transition = { f, file, GPOINTER_TO_UINT (mode), FALSE, FALSE };
+    GtkWidget *status = find_label (GTK_WIDGET (f->preview), "Select a file to preview");
+    g_assert_nonnull (status);
+    g_signal_connect (status, "notify::label", G_CALLBACK (filesystem_transition_phase), &transition);
+    NautilusMillerPreview *weak = f->preview;
+    g_object_add_weak_pointer (G_OBJECT (weak), (gpointer *) &weak);
+    select_one (f, f->first);
+    gint64 deadline = g_get_monotonic_time () + 8 * G_TIME_SPAN_SECOND;
+    while (!transition.ran)
+    {
+        g_assert_cmpint (g_get_monotonic_time (), <, deadline); pump (10);
+    }
+    pump (80);
+    if (transition.mode == 1) { g_assert_null (weak); }
+    else
+    {
+        g_signal_handlers_disconnect_by_data (status, &transition);
+        settle (f);
+        if (transition.mode == 0)
+        {
+            g_autofree char *empty = preview_text (f); g_assert_cmpstr (empty, ==, "");
+            gtk_widget_set_visible (GTK_WIDGET (f->preview), TRUE); settle (f);
+        }
+        g_autofree char *contents = preview_text (f);
+        g_assert_cmpstr (contents, ==, transition.mode == 0 ? "alpha" : "beta");
+        g_object_remove_weak_pointer (G_OBJECT (weak), (gpointer *) &weak);
+    }
+}
+
+static void
+test_native_filesystem_readiness (Fixture *f, gconstpointer unused)
+{
+    g_autoptr (NautilusFile) file = nautilus_file_get (f->first);
+    g_assert_true (g_file_is_native (f->first));
+    g_assert_false (nautilus_file_check_if_ready (file, NAUTILUS_FILE_ATTRIBUTE_FILESYSTEM_INFO));
+    select_one (f, f->first); settle (f);
+    g_autofree char *contents = preview_text (f);
+    g_assert_cmpstr (contents, ==, "alpha");
+    g_assert_true (nautilus_file_check_if_ready (file, NAUTILUS_FILE_ATTRIBUTE_FILESYSTEM_INFO));
+}
+
+static void
+test_native_remote_policy (Fixture *f, gconstpointer image)
+{
+    g_autoptr (GFile) location = image ? write_image (f, "mounted-remote.png", "png", 64, 32) : g_object_ref (f->first);
+    g_autoptr (NautilusFile) file = nautilus_file_get (location);
+    /* Model the native cache's remote-filesystem response for a file: path.
+     * This tests the policy boundary, not an actual NFS/CIFS mount. The
+     * separate uncached case uses a real native filesystem-info request. */
+    file->details->filesystem_remote = TRUE;
+    file->details->filesystem_info_is_up_to_date = TRUE;
+    file->details->filesystem_use_preview = G_FILESYSTEM_PREVIEW_TYPE_IF_ALWAYS;
+    g_assert_true (g_file_is_native (location)); g_assert_true (nautilus_file_is_remote (file));
+    g_autoptr (GVariant) old_remote = g_settings_get_value (nautilus_preferences, "miller-preview-remote");
+    g_autoptr (GVariant) old_thumbnails = g_settings_get_value (nautilus_preferences, "show-image-thumbnails");
+    g_settings_set_boolean (nautilus_preferences, "miller-preview-remote", FALSE);
+    g_settings_set_enum (nautilus_preferences, NAUTILUS_PREFERENCES_SHOW_FILE_THUMBNAILS, NAUTILUS_SPEED_TRADEOFF_ALWAYS);
+    g_autofree char *path = g_file_get_path (location);
+    int events = inotify_init1 (IN_NONBLOCK | IN_CLOEXEC);
+    g_assert_cmpint (events, >=, 0); g_assert_cmpint (inotify_add_watch (events, path, IN_OPEN), >=, 0);
+    select_one (f, location); settle (f);
+    g_assert_nonnull (find_label (GTK_WIDGET (f->preview), "Remote content preview is disabled."));
+    g_autofree char *contents = preview_text (f); g_assert_cmpstr (contents, ==, "");
+    GtkPicture *picture = GTK_PICTURE (find_type (GTK_WIDGET (f->preview), GTK_TYPE_PICTURE));
+    g_assert_null (gtk_picture_get_paintable (picture));
+    char buffer[4096]; g_assert_cmpint (read (events, buffer, sizeof buffer), ==, -1); g_assert_cmpint (errno, ==, EAGAIN);
+    close (events);
+    g_settings_set_value (nautilus_preferences, "miller-preview-remote", old_remote);
+    g_settings_set_value (nautilus_preferences, "show-image-thumbnails", old_thumbnails);
+}
+
 int
 main (int argc, char **argv)
 {
@@ -1150,6 +1260,12 @@ main (int argc, char **argv)
     CASE ("remote-enabled-policy", test_remote_enabled);
     CASE ("remote-bounded-read", test_remote_bounded);
     CASE ("remote-image-policy", test_remote_image);
+    CASE ("native-filesystem-readiness", test_native_filesystem_readiness);
+    g_test_add ("/miller/preview/filesystem-wait-hide", Fixture, GUINT_TO_POINTER (0), setup, test_filesystem_wait_transition, teardown);
+    g_test_add ("/miller/preview/filesystem-wait-dispose", Fixture, GUINT_TO_POINTER (1), setup, test_filesystem_wait_transition, teardown);
+    g_test_add ("/miller/preview/filesystem-wait-replace", Fixture, GUINT_TO_POINTER (2), setup, test_filesystem_wait_transition, teardown);
+    g_test_add ("/miller/preview/native-remote-text", Fixture, NULL, setup, test_native_remote_policy, teardown);
+    g_test_add ("/miller/preview/native-remote-image", Fixture, GINT_TO_POINTER (1), setup, test_native_remote_policy, teardown);
     g_test_add ("/miller/preview/replacement-fifo", Fixture, GUINT_TO_POINTER (0), setup, test_replacement, teardown);
     g_test_add ("/miller/preview/replacement-link", Fixture, GUINT_TO_POINTER (1), setup, test_replacement, teardown);
     g_test_add ("/miller/preview/replacement-file", Fixture, GUINT_TO_POINTER (2), setup, test_replacement, teardown);

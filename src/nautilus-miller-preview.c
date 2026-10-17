@@ -25,6 +25,8 @@ typedef struct
     GWeakRef owner;
     guint64 generation;
     GFile *file;
+    NautilusFile *source_file;
+    gulong filesystem_cancel_handler;
     GFileInfo *info;
     GCancellable *cancellable;
     char *mime;
@@ -92,6 +94,8 @@ static void
 request_free (PreviewRequest *request)
 {
     g_weak_ref_clear (&request->owner);
+    g_clear_signal_handler (&request->filesystem_cancel_handler, request->cancellable);
+    g_clear_pointer (&request->source_file, nautilus_file_unref);
     g_clear_object (&request->file);
     g_clear_object (&request->info);
     g_clear_object (&request->cancellable);
@@ -488,6 +492,117 @@ text_ready (GObject *source, GAsyncResult *result, gpointer data)
 }
 
 static void
+start_content (PreviewRequest *request)
+{
+    g_autoptr (NautilusMillerPreview) self = g_weak_ref_get (&request->owner);
+    if (self == NULL || !current (self, request->generation) || self->timed_out ||
+        !work_allowed (self) || g_cancellable_is_cancelled (request->cancellable))
+    {
+        request_finished (request);
+        return;
+    }
+    guint64 generation = request->generation;
+    if ((!g_file_is_native (request->file) || nautilus_file_is_remote (request->source_file)) &&
+        (!g_settings_get_boolean (nautilus_preferences, NAUTILUS_PREFERENCES_MILLER_PREVIEW_REMOTE) ||
+         g_settings_get_enum (nautilus_preferences, NAUTILUS_PREFERENCES_SHOW_FILE_THUMBNAILS) != NAUTILUS_SPEED_TRADEOFF_ALWAYS ||
+         !nautilus_file_should_preview (request->source_file)))
+    {
+        label_text (self, self->status, _("Remote content preview is disabled."), generation);
+    }
+    else if (g_str_has_prefix (request->mime, "image/"))
+    {
+        guint64 limit_mb = g_settings_get_uint64 (nautilus_preferences, NAUTILUS_PREFERENCES_FILE_THUMBNAIL_LIMIT);
+        guint64 limit = limit_mb > G_MAXUINT64 / (1024 * 1024) ? G_MAXUINT64 : limit_mb * 1024 * 1024;
+        gboolean exceeds_preference = nautilus_thumbnail_is_mimetype_limited_by_size (request->mime) &&
+            g_file_info_has_attribute (request->info, G_FILE_ATTRIBUTE_STANDARD_SIZE) &&
+            (guint64) g_file_info_get_size (request->info) > limit;
+        if (!nautilus_file_should_preview (request->source_file) || exceeds_preference)
+        {
+            label_text (self, self->status, _("Image preview disabled by thumbnail preferences."), generation);
+        }
+        else if (g_file_info_has_attribute (request->info, G_FILE_ATTRIBUTE_STANDARD_SIZE) &&
+                 g_file_info_get_size (request->info) > IMAGE_INPUT_LIMIT)
+        {
+            label_text (self, self->status, _("Image exceeds input limit."), generation);
+        }
+        else if (label_text (self, self->status, _("Loading image preview…"), generation) &&
+                 !self->timed_out && !g_cancellable_is_cancelled (request->cancellable))
+        {
+            request->image_content = TRUE;
+            request->input_limit = nautilus_thumbnail_is_mimetype_limited_by_size (request->mime) ?
+                MIN ((guint64) IMAGE_INPUT_LIMIT, limit) : IMAGE_INPUT_LIMIT;
+            g_autoptr (GTask) task = g_task_new (NULL, request->cancellable, image_bytes_ready, request);
+            g_task_set_task_data (task, request, NULL);
+            g_task_run_in_thread (task, read_content);
+            return;
+        }
+    }
+    else if (g_str_equal (request->mime, "application/pdf") || g_str_has_prefix (request->mime, "audio/") ||
+             g_str_has_prefix (request->mime, "video/"))
+    {
+        if (!nautilus_file_should_preview (request->source_file))
+        {
+            label_text (self, self->status, _("Thumbnail disabled by preferences — Open or press Space to inspect"), generation);
+        }
+        else if (g_file_info_has_attribute (request->info, G_FILE_ATTRIBUTE_STANDARD_SIZE) &&
+                 g_file_info_get_size (request->info) > IMAGE_INPUT_LIMIT)
+        {
+            label_text (self, self->status, _("Preview exceeds input limit — Open or press Space to inspect"), generation);
+        }
+        else if (label_text (self, self->status, _("Loading thumbnail…"), generation) &&
+                 !self->timed_out && !g_cancellable_is_cancelled (request->cancellable))
+        {
+            request->thumbnail_content = request->image_content = TRUE;
+            request->input_limit = IMAGE_INPUT_LIMIT;
+            g_autoptr (GTask) task = g_task_new (NULL, request->cancellable, thumbnail_bytes_ready, request);
+            g_task_set_task_data (task, request, NULL);
+            g_task_run_in_thread (task, read_content);
+            return;
+        }
+    }
+    else if (g_content_type_is_a (request->mime, "text/plain") || g_str_has_prefix (request->mime, "text/"))
+    {
+        if (label_text (self, self->status, _("Loading text preview…"), generation) &&
+            !self->timed_out && !g_cancellable_is_cancelled (request->cancellable))
+        {
+            g_autoptr (GTask) task = g_task_new (NULL, request->cancellable, text_ready, request);
+            g_task_set_task_data (task, request, NULL);
+            /* Default return-on-cancel is FALSE: only its actual completion
+             * releases the in-flight slot, even after the UI times out. */
+            g_task_run_in_thread (task, read_content);
+            return;
+        }
+    }
+    else { label_text (self, self->status, _("Preview is unavailable for this file type."), generation); }
+    request_finished (request);
+}
+
+static void
+filesystem_ready (NautilusFile *file, gpointer data)
+{
+    PreviewRequest *request = data;
+    g_clear_signal_handler (&request->filesystem_cancel_handler, request->cancellable);
+    start_content (request);
+}
+
+static void
+filesystem_cancel_finished (gpointer data)
+{
+    request_finished (data);
+}
+
+static void
+filesystem_wait_cancelled (GCancellable *cancellable, PreviewRequest *request)
+{
+    g_clear_signal_handler (&request->filesystem_cancel_handler, request->cancellable);
+    nautilus_file_cancel_call_when_ready (request->source_file, filesystem_ready, request);
+    /* Native readiness cancellation removes the callback. Finish on the next
+     * main-loop iteration so refresh/dispose can finish invalidating the UI
+     * before the outstanding slot is released and a coalesced target starts. */
+    g_idle_add_once (filesystem_cancel_finished, request);
+}
+
+static void
 metadata_ready (GObject *source, GAsyncResult *result, gpointer data)
 {
     PreviewRequest *request = data;
@@ -539,78 +654,30 @@ metadata_ready (GObject *source, GAsyncResult *result, gpointer data)
     {
         label_text (self, self->status, _("Metadata preview"), generation);
     }
-    else if (!g_file_is_native (request->file) &&
-             (!g_settings_get_boolean (nautilus_preferences, NAUTILUS_PREFERENCES_MILLER_PREVIEW_REMOTE) ||
-              g_settings_get_enum (nautilus_preferences, NAUTILUS_PREFERENCES_SHOW_FILE_THUMBNAILS) != NAUTILUS_SPEED_TRADEOFF_ALWAYS ||
-              !nautilus_file_should_preview (self->files->data)))
+    else
     {
-        label_text (self, self->status, _("Remote content preview is disabled."), generation);
+        /* Native paths can be mounted remote filesystems. The native remote
+         * predicate defaults to local until filesystem information is ready;
+         * use its existing asynchronous queue before permitting content. */
+        if (nautilus_file_check_if_ready (request->source_file, NAUTILUS_FILE_ATTRIBUTE_FILESYSTEM_INFO))
+        {
+            start_content (request);
+        }
+        else
+        {
+            if (!label_text (self, self->status, _("Checking preview availability…"), generation) ||
+                g_cancellable_is_cancelled (request->cancellable))
+            {
+                request_finished (request);
+                return;
+            }
+            request->filesystem_cancel_handler = g_signal_connect (request->cancellable, "cancelled",
+                G_CALLBACK (filesystem_wait_cancelled), request);
+            nautilus_file_call_when_ready (request->source_file, NAUTILUS_FILE_ATTRIBUTE_FILESYSTEM_INFO,
+                filesystem_ready, request);
+        }
+        return;
     }
-    else if (g_str_has_prefix (request->mime, "image/"))
-    {
-        guint64 limit_mb = g_settings_get_uint64 (nautilus_preferences, NAUTILUS_PREFERENCES_FILE_THUMBNAIL_LIMIT);
-        guint64 limit = limit_mb > G_MAXUINT64 / (1024 * 1024) ? G_MAXUINT64 : limit_mb * 1024 * 1024;
-        gboolean exceeds_preference = nautilus_thumbnail_is_mimetype_limited_by_size (request->mime) &&
-            g_file_info_has_attribute (request->info, G_FILE_ATTRIBUTE_STANDARD_SIZE) &&
-            (guint64) g_file_info_get_size (request->info) > limit;
-        if (!nautilus_file_should_preview (self->files->data) || exceeds_preference)
-        {
-            label_text (self, self->status, _("Image preview disabled by thumbnail preferences."), generation);
-        }
-        else if (g_file_info_has_attribute (request->info, G_FILE_ATTRIBUTE_STANDARD_SIZE) &&
-                 g_file_info_get_size (request->info) > IMAGE_INPUT_LIMIT)
-        {
-            label_text (self, self->status, _("Image exceeds input limit."), generation);
-        }
-        else if (label_text (self, self->status, _("Loading image preview…"), generation) &&
-                 !self->timed_out && !g_cancellable_is_cancelled (request->cancellable))
-        {
-            request->image_content = TRUE;
-            request->input_limit = nautilus_thumbnail_is_mimetype_limited_by_size (request->mime) ?
-                MIN ((guint64) IMAGE_INPUT_LIMIT, limit) : IMAGE_INPUT_LIMIT;
-            g_autoptr (GTask) task = g_task_new (NULL, request->cancellable, image_bytes_ready, request);
-            g_task_set_task_data (task, request, NULL);
-            g_task_run_in_thread (task, read_content);
-            return;
-        }
-    }
-    else if (g_str_equal (request->mime, "application/pdf") || g_str_has_prefix (request->mime, "audio/") ||
-             g_str_has_prefix (request->mime, "video/"))
-    {
-        if (!nautilus_file_should_preview (self->files->data))
-        {
-            label_text (self, self->status, _("Thumbnail disabled by preferences — Open or press Space to inspect"), generation);
-        }
-        else if (g_file_info_has_attribute (request->info, G_FILE_ATTRIBUTE_STANDARD_SIZE) &&
-                 g_file_info_get_size (request->info) > IMAGE_INPUT_LIMIT)
-        {
-            label_text (self, self->status, _("Preview exceeds input limit — Open or press Space to inspect"), generation);
-        }
-        else if (label_text (self, self->status, _("Loading thumbnail…"), generation) &&
-                 !self->timed_out && !g_cancellable_is_cancelled (request->cancellable))
-        {
-            request->thumbnail_content = request->image_content = TRUE;
-            request->input_limit = IMAGE_INPUT_LIMIT;
-            g_autoptr (GTask) task = g_task_new (NULL, request->cancellable, thumbnail_bytes_ready, request);
-            g_task_set_task_data (task, request, NULL);
-            g_task_run_in_thread (task, read_content);
-            return;
-        }
-    }
-    else if (g_content_type_is_a (request->mime, "text/plain") || g_str_has_prefix (request->mime, "text/"))
-    {
-        if (label_text (self, self->status, _("Loading text preview…"), generation) &&
-            !self->timed_out && !g_cancellable_is_cancelled (request->cancellable))
-        {
-            g_autoptr (GTask) task = g_task_new (NULL, request->cancellable, text_ready, request);
-            g_task_set_task_data (task, request, NULL);
-            /* Default return-on-cancel is FALSE: only its actual completion
-             * releases the in-flight slot, even after the UI times out. */
-            g_task_run_in_thread (task, read_content);
-            return;
-        }
-    }
-    else { label_text (self, self->status, _("Preview is unavailable for this file type."), generation); }
     request_finished (request);
 }
 
@@ -621,7 +688,8 @@ start_request (NautilusMillerPreview *self)
     PreviewRequest *request = g_new0 (PreviewRequest, 1);
     g_weak_ref_init (&request->owner, self);
     request->generation = self->generation;
-    request->file = nautilus_file_get_location (self->files->data);
+    request->source_file = nautilus_file_ref (self->files->data);
+    request->file = nautilus_file_get_location (request->source_file);
     const char *mime = nautilus_file_get_mime_type (self->files->data);
     request->mime = mime != NULL && nautilus_file_check_if_ready (self->files->data, NAUTILUS_FILE_ATTRIBUTE_INFO) ?
         g_strdup (mime) : g_content_type_guess (

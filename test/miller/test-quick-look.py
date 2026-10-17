@@ -100,12 +100,12 @@ class QuickLook(unittest.TestCase):
                     [('one.txt', 'true')] * 3 + [('two.txt', 'false')])
 
     def test_miller_pending_owner(self):
-        self.actual('build-miller', 'pending', ['pending-entry', 'pending-tab-switch', 'pending-tab-close'],
-                    [('one.txt', 'true')] * 5)
+        self.actual('build-miller', 'pending', ['pending-entry', 'pending-tab-switch', 'pending-tab-close',
+                    'pending-deselection', 'pending-removal'], [('one.txt', 'true')] * 9)
 
     def test_canonical_pending_owner(self):
-        self.actual('build-preview-canonical', 'pending', ['pending-entry', 'pending-tab-switch', 'pending-tab-close'],
-                    [('one.txt', 'true')] * 5)
+        self.actual('build-preview-canonical', 'pending', ['pending-entry', 'pending-tab-switch', 'pending-tab-close',
+                    'pending-deselection', 'pending-removal'], [('one.txt', 'true')] * 9)
 
     def test_miller_shared_provider(self):
         self.actual('build-miller', 'foreign', ['foreign-selection', 'foreign-close'],

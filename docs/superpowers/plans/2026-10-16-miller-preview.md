@@ -63,7 +63,7 @@
 
 - [x] Add actual Space/selection navigation/repeated Space/Escape/focus-return/tab-switch/tab-close cases using installed canonical Sushi. Repeat in Miller and canonical profiles on private buses with mounted disposable Home. Add unavailable-provider and service-restart cases; expected truthful visible feedback, no stale selection/action owner or lost browsing focus. First reproduce any failure; discovery mocks alone cannot pass this gate.
 - [x] Correct demonstrated wrapper/UI ownership and missing-provider feedback at native boundaries. Preserve provider contract and existing discovery-generation tests. Expected: actual provider cases and discovery suite GREEN.
-- [ ] Run full fresh regressions, profile isolation, process restart and installed-provider acceptance. Record exact source/providers/results; all Stage3 gates must have evidence. Obtain one fresh read-only whole-plan review, then one regression-first correction pass for Critical/Important findings with a full green suite. Preserve deferred minors/rulings and continue the full goal.
+- [x] Run full fresh regressions, profile isolation, process restart and installed-provider acceptance. Record exact source/providers/results; all Stage3 gates must have evidence. Obtain one fresh read-only whole-plan review, then one regression-first correction pass for Critical/Important findings with a full green suite. Preserve deferred minors/rulings and continue the full goal.
 
 ## Self-review
 

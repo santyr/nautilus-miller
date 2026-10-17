@@ -259,6 +259,41 @@ test_controls_focus (Fixture *f, gconstpointer unused)
     g_assert_true (focus && gtk_widget_is_ancestor (focus, GTK_WIDGET (view)));
 }
 static void
+test_selected_file_monitor (Fixture *f, gconstpointer unused)
+{
+    NautilusFilesView *view = nautilus_window_slot_get_current_view (f->slot);
+    select_one (view, f->one); gtk_widget_grab_focus (GTK_WIDGET (view)); toggle (f);
+    guint history = g_list_length (nautilus_window_slot_get_back_history (f->slot));
+    GtkWidget *focus = gtk_root_get_focus (GTK_ROOT (f->window));
+    g_autoptr (NautilusFile) original = nautilus_file_get (f->one);
+    const char *replacement = "monitor replacement contents";
+    g_assert_true (g_file_replace_contents (f->one, replacement, strlen (replacement), NULL, FALSE, 0, NULL, NULL, NULL));
+    gint64 deadline = g_get_monotonic_time () + 8 * G_TIME_SPAN_SECOND;
+    for (;;)
+    {
+        GtkTextView *text = GTK_TEXT_VIEW (find_type (GTK_WIDGET (preview (f)), GTK_TYPE_TEXT_VIEW));
+        GtkTextBuffer *buffer = gtk_text_view_get_buffer (text);
+        GtkTextIter start, end; gtk_text_buffer_get_bounds (buffer, &start, &end);
+        g_autofree char *contents = gtk_text_buffer_get_text (buffer, &start, &end, FALSE);
+        if (g_strcmp0 (contents, replacement) == 0) { break; }
+        g_assert_cmpint (g_get_monotonic_time (), <, deadline); pump (10);
+    }
+    g_autolist (NautilusFile) selected = nautilus_files_view_get_selection (view);
+    g_assert_cmpuint (g_list_length (selected), ==, 1); g_assert_true (selected->data == original);
+    g_assert_true (gtk_root_get_focus (GTK_ROOT (f->window)) == focus);
+    g_autoptr (GFile) renamed = g_file_set_display_name (f->one, "renamed-monitor.txt", NULL, NULL);
+    g_assert_nonnull (renamed);
+    deadline = g_get_monotonic_time () + 8 * G_TIME_SPAN_SECOND;
+    while (find_text (GTK_WIDGET (preview (f)), "renamed-monitor.txt", FALSE) == NULL)
+    {
+        g_assert_cmpint (g_get_monotonic_time (), <, deadline); pump (10);
+    }
+    g_assert_cmpuint (g_list_length (nautilus_window_slot_get_back_history (f->slot)), ==, history);
+    assert_owner (f, view, f->child);
+    g_assert_true (gtk_widget_is_ancestor (gtk_root_get_focus (GTK_ROOT (f->window)), GTK_WIDGET (view)));
+}
+
+static void
 test_width (Fixture *f, gconstpointer unused)
 {
     toggle (f);
@@ -567,7 +602,7 @@ test_quicklook_pending_owner (gconstpointer action_data)
         entry = gtk_root_get_focus (GTK_ROOT (f.window));
         g_assert_true (GTK_IS_EDITABLE (entry));
     }
-    else
+    else if (action <= 2)
     {
         weak = f.slot;
         g_object_add_weak_pointer (G_OBJECT (weak), (gpointer *) &weak);
@@ -576,6 +611,19 @@ test_quicklook_pending_owner (gconstpointer action_data)
         if (action == 2) { adw_tab_view_close_page (tabs, old); }
         g_object_get (f.window, "active-slot", &f.slot, NULL); settle (&f);
         if (action == 2) { g_assert_null (weak); }
+    }
+    else
+    {
+        if (action == 3) { key_chord (GDK_KEY_space, FALSE); }
+        else { g_assert_true (g_file_delete (f.one, NULL, NULL)); }
+        gint64 deadline = g_get_monotonic_time () + 8 * G_TIME_SPAN_SECOND;
+        for (;;)
+        {
+            g_autolist (NautilusFile) selected = nautilus_files_view_get_selection (view);
+            if (selected == NULL) { break; }
+            g_assert_cmpint (g_get_monotonic_time (), <, deadline); pump (10);
+        }
+        assert_owner (&f, view, f.child);
     }
     start_owned_sushi ();
     /* Observe the complete pending-request lifetime, including the original
@@ -597,6 +645,20 @@ test_quicklook_pending_owner (gconstpointer action_data)
         g_clear_object (&f.slot); g_object_get (f.window, "active-slot", &f.slot, NULL); settle (&f);
     }
     if (weak != NULL) { g_object_remove_weak_pointer (G_OBJECT (weak), (gpointer *) &weak); }
+    if (action >= 3)
+    {
+        if (action == 4)
+        {
+            g_assert_true (g_file_replace_contents (f.one, "restored owned file", 19, NULL, FALSE, 0, NULL, NULL, NULL));
+            g_autoptr (NautilusFile) file = nautilus_file_get (f.one);
+            gint64 deadline = g_get_monotonic_time () + 8 * G_TIME_SPAN_SECOND;
+            while (nautilus_view_model_get_item_for_file (nautilus_files_view_get_private_model (view), file) == NULL)
+            {
+                g_assert_cmpint (g_get_monotonic_time (), <, deadline); pump (10);
+            }
+        }
+        select_one (view, f.one); gtk_widget_grab_focus (GTK_WIDGET (view)); settle (&f);
+    }
     if (action != 2)
     {
         plain_key (GDK_KEY_space); wait_quicklook (TRUE);
@@ -911,6 +973,7 @@ main (int argc, char **argv)
     CASE ("decode-tab-close", test_decode_tab_close);
     g_test_add ("/miller/preview-ui/decode-new-tab-close", Fixture, GINT_TO_POINTER (1), setup, test_decode_tab_close, teardown);
     CASE ("remote-preference", test_remote_preference);
+    CASE ("selected-file-monitor", test_selected_file_monitor);
     CASE ("background-close-entry-focus", test_background_close_entry_focus);
     CASE ("active-parent", test_active_parent); CASE ("empty-child", test_empty_child);
     CASE ("history-selection", test_history); CASE ("mode-special-return", test_mode_special);
@@ -927,6 +990,8 @@ main (int argc, char **argv)
     g_test_add_data_func ("/miller/quicklook/pending-entry", NULL, test_quicklook_pending_owner);
     g_test_add_data_func ("/miller/quicklook/pending-tab-switch", GUINT_TO_POINTER (1), test_quicklook_pending_owner);
     g_test_add_data_func ("/miller/quicklook/pending-tab-close", GUINT_TO_POINTER (2), test_quicklook_pending_owner);
+    g_test_add_data_func ("/miller/quicklook/pending-deselection", GUINT_TO_POINTER (3), test_quicklook_pending_owner);
+    g_test_add_data_func ("/miller/quicklook/pending-removal", GUINT_TO_POINTER (4), test_quicklook_pending_owner);
     g_test_add_data_func ("/miller/quicklook/foreign-selection", NULL, test_quicklook_foreign_owner);
     g_test_add_data_func ("/miller/quicklook/foreign-close", GINT_TO_POINTER (1), test_quicklook_foreign_owner);
     int result = g_test_run (); stop_owned_sushi (); miller_test_input_free (input); return result;

@@ -25,6 +25,7 @@
 
 #include "nautilus-previewer.h"
 
+#include "nautilus-file.h"
 #include "nautilus-files-view.h"
 #include "nautilus-window.h"
 #include "nautilus-window-slot.h"
@@ -446,6 +447,22 @@ try_show_file (void)
     if (pending_show == NULL) { return; }
     if (!owner_is_live ()) { cancel_pending_show (); return; }
     NautilusFilesView *view = nautilus_window_slot_get_current_view (current_slot);
+    g_autolist (NautilusFile) selection = view != NULL ? nautilus_files_view_get_selection (view) : NULL;
+    if (selection == NULL || nautilus_file_is_gone (selection->data))
+    {
+        cancel_pending_show ();
+        owner_closed = TRUE;
+        return;
+    }
+    /* Discovery/export can finish before FilesView's coalesced notification.
+     * Revalidate through its current selection, keeping the original deadline. */
+    g_autofree char *uri = nautilus_file_get_uri (selection->data);
+    if (!g_str_equal (pending_show->uri, uri))
+    {
+        g_free (pending_show->uri);
+        pending_show->uri = g_steal_pointer (&uri);
+        pending_show->close_if_already_visible = FALSE;
+    }
     GtkWidget *focus = gtk_root_get_focus (current_window);
     if (focus != NULL && view != NULL && focus != GTK_WIDGET (view) &&
         !gtk_widget_is_ancestor (focus, GTK_WIDGET (view)))

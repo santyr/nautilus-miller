@@ -1247,6 +1247,7 @@ nautilus_files_view_preview_update (NautilusFilesView *view)
     selection = nautilus_files_view_get_selection (view);
     if (selection == NULL)
     {
+        nautilus_previewer_call_close ();
         return;
     }
 

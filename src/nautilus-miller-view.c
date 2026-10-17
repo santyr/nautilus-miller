@@ -435,7 +435,9 @@ selection_changed (NautilusFilesView *view, MillerColumn *column)
     }
     nautilus_file_list_free (column->observed_selection);
     column->observed_selection = g_steal_pointer (&selection);
-    if (!same && column->owner->active_view == view) { update_preview (column->owner); }
+    /* FilesView also notifies when selected files change in place. Refresh
+     * inspection without treating unchanged selection as new navigation. */
+    if (column->owner->active_view == view) { update_preview (column->owner); }
     /* FilesView coalesces selection notifications and also sends them after
      * model updates. An unchanged ancestor selection is not new navigation
      * and must not reclaim action ownership from a child we just entered. */
