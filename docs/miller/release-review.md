@@ -44,3 +44,9 @@ the allowance; PDF capability False→True and real existing WebM/WAV fixture
 encoding confirm the missing dependencies. No application rendering, transfer
 code or maintained assertion was changed to obtain this result. The earlier
 failures and canceled run remain in the release evidence.
+
+The complete review disposition, original ledger and exact raw evidence are
+preserved in the verified local release bundle listed in
+[release readiness](release-readiness.md#durable-release-evidence). The completed
+plan's scratch directory is removed after that preservation; the working branch
+and package artifacts remain for host deployment handoff.

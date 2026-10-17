@@ -125,3 +125,18 @@ Restore the saved signed stock packages and original settings with:
 
 The host remains on the earlier Miller1 installation during this goal. A package
 build, private activation check or container transaction is not host deployment.
+
+## Durable release evidence
+
+The ignored local bundle `build-evidence/miller-release-f69f31027.tar.xz` preserves
+the complete release ledger, review/rulings, immutable diff, all four task
+closures, passing/failed/canceled diagnostics, uploaded native CI logs, artifact
+provenance and owned-container cleanup. It contains108 regular files:107 payloads
+plus the internal SHA256 manifest. Every payload was verified before scratch
+cleanup. Documentation snapshot: `241e13c50`; package/CI identities remain above.
+
+Size:8,524,760bytes. SHA256:
+`ece89f14952d5a8e765e321b6f488f56127ba6daf7f20403946c30c79084c23a`.
+The adjacent `.sha256` file verifies the complete archive. Packages and the prior
+component evidence bundles remain locally available; binaries were not published
+as a GitHub release. The public `finder-completion` source branch is preserved.
