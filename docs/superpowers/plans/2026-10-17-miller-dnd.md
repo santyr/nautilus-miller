@@ -28,7 +28,7 @@
 - Source or target disappears while native hover/edge scrolling is pending: clean cancellation/error, no stale callback or wrong-directory operation (Task3 actual GIO removal).
 - Incoming foreign drops have no local GdkDrag object: native acceptance versus leave still decides branch retention correctly, without creating a replacement transfer path (Task3 owned external GTK source/sink).
 
-## Task1: Shared fixture and genuine native drag characterization
+### Task 1: Shared fixture and genuine native drag characterization
 
 **Files:** create `test/automated/miller-test-operations.[ch]`, `test/automated/display/test-miller-dnd.c`; modify existing operations test and display Meson table; evidence/parity docs.
 
@@ -41,7 +41,7 @@
 - [ ] Characterize inherited passes first; preserve RED for genuine defects, find the cause and make only narrow native integration corrections. Direct transfer APIs do not close these cases. Keep hover duration short here; spring browsing belongs to Task2.
 - [ ] Run full regressions: both builds/profiles, expected40 Meson executables after the new executable, all63 operations, new real DnD cases, actual inspector53/navigation10/delayed4 and maintained Python90. Use the established session/Home dispatch and strict count/no-skip/source-fingerprint verification. Update evidence and commit.
 
-## Task2: Native spring-loaded disclosure and cancellation
+### Task 2: Native spring-loaded disclosure and cancellation
 
 **Files:** native ListBase hover/drop boundary, Miller coordinator and new DnD test; interaction/evidence docs. Modify FilesView/slot only for a reproduced integration need.
 
@@ -53,7 +53,7 @@
 - [ ] Own/release drop references, signal connections and snapshots explicitly on completion/leave/unmap/disposal. Ignore stale end/leave/completion after a newer interaction. Source-tab and monitor changes cannot roll back newer navigation. Keep entries/menus/preview controls and native keyboard behavior intact.
 - [ ] Rerun every Task1/Task2 case and existing Grid/List controls, then the complete40-executable/two-profile gate plus63 operations, inspector53/navigation10/delayed4/Python90. Record RED/GREEN and native limitations; commit.
 
-## Task3: Scrolling, cross-client destinations and lifetime acceptance
+### Task 3: Scrolling, cross-client destinations and lifetime acceptance
 
 **Files:** DnD test and test-only external GTK role, Miller strip scrolling/lifecycle boundary if needed, existing pending-clipboard test, docs.
 
@@ -71,3 +71,19 @@
 This is focused integration against the user-approved full written goal. Its direction to continue stages, make narrow reversible choices and avoid repeated preference questions governs routine fixtures and the explicit temporary-branch policy. Native inline execution and the same finder-completion worktree continue; integration/deployment decisions belong to Stage6.
 
 The helper extraction has two real consumers and preserves existing assertions; it is not a new test automation framework. All newly listed test cases must execute with genuine session input and observed native drag/drop, or remain explicitly open. The provisional/committed distinction is limited to a live drag and requires delayed/navigation/lifetime regressions. Real remote disconnect, extension/OpenPGP, broad accessibility/performance, observed CI and disposable release transactions remain required by subsequent full-goal work, with no waiver inferred from this component.
+
+## Verification commands
+
+Build: `meson compile -C build-miller` and `meson compile -C build-preview-canonical`. Expected: exit0. Check development identity with `python3 tools/miller/check-profile.py build-miller`; expected: exit0.
+
+Genuine case family, from the worktree (use the appropriate absolute build/schema paths when wrapped):
+
+```sh
+python3 tools/miller/with-test-session.py -- python3 tools/miller/with-test-home.py -- \
+  env GTK_A11Y=test GSETTINGS_SCHEMA_DIR="$PWD/build-miller/data" \
+  "$PWD/build-miller/test/automated/display/test-miller-dnd" -p /miller/dnd
+```
+
+Task1 expected:9 actual passing DnD cases/no skips, plus existing operations63. Task2 expected:17 actual cases in the separate delayed-backend run, plus operations63; ordinary Meson must mark any external-only case explicitly and the separate backend run must pass it. Task3 adds14 DnD cases (expected31 actual) and one operations case (expected64); exact counts may increase only for recorded additional cases, never through silent skips. All genuine cases require observed GdkDrag/native drop/cancel and filesystem/receipt assertions.
+
+The complete gate runs both full40-executable Meson suites through the established input-guard/LocalSearch/mounted-Home dispatch, separate actual inspector53/navigation10/delayed4 and actual delayed DnD when needed, plus every maintained Python test (baseline90). The executor creates a plan-owned runner/verifier from the preserved operations evidence bundle, updates exact new case counts and source fingerprints, and records the exact command/log paths before running. Expected: every command exit0, every required external case actually passes, fingerprint unchanged throughout; missing environment or skips never substitute for actual acceptance.
