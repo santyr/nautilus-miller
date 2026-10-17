@@ -83,6 +83,7 @@ void nautilus_window_show_operation_notification (NautilusWindow *window,
                                                   gchar          *main_label,
                                                   GFile          *folder_to_open,
                                                   gboolean        was_quick);
+void nautilus_window_show_toast (NautilusWindow *window, AdwToast *toast);
 
 void nautilus_window_search (NautilusWindow *window,
                              NautilusQuery  *query);

@@ -30,6 +30,7 @@
 #include "nautilus-window-slot.h"
 
 #include <gio/gio.h>
+#include <glib/gi18n.h>
 
 #ifdef GDK_WINDOWING_WAYLAND
 #include <gdk/wayland/gdkwayland.h>
@@ -60,11 +61,97 @@ static GCancellable *cancellable;
 static NautilusWindowSlot *current_slot = NULL; /* weak ref */
 static GtkRoot *current_window = NULL; /* weak ref */
 static gchar *exported_window_handle = NULL;
+static GSignalGroup *slot_signals;
+static gboolean owner_closed;
 
-static void real_call_show_file (const gchar *uri,
-                                 const gchar *window_handle,
-                                 gboolean     close_if_already_visible,
-                                 const char  *activation_token);
+static void
+owner_active_changed (NautilusWindowSlot *slot, GParamSpec *pspec, gpointer data)
+{
+    if (slot == current_slot && !nautilus_window_slot_get_active (slot))
+    {
+        nautilus_previewer_call_close ();
+    }
+}
+
+static void
+owner_unmapped (GtkWidget *widget, gpointer data)
+{
+    if (widget == GTK_WIDGET (current_slot)) { nautilus_previewer_call_close (); }
+}
+
+typedef struct
+{
+    char *uri, *activation_token;
+    gboolean close_if_already_visible;
+    guint64 generation;
+    gint64 expires;
+} PendingShow;
+
+static PendingShow *pending_show;
+static guint64 show_generation, inflight_generation, window_generation;
+static guint pending_timeout;
+static gboolean export_pending;
+static void try_show_file (void);
+static gboolean ensure_previewer_proxy (void);
+
+static void
+pending_show_free (PendingShow *show)
+{
+    g_free (show->uri);
+    g_free (show->activation_token);
+    g_free (show);
+}
+G_DEFINE_AUTOPTR_CLEANUP_FUNC (PendingShow, pending_show_free)
+
+static gboolean
+owner_is_live (void)
+{
+    return initialized && !owner_closed && current_slot != NULL && current_window != NULL &&
+           nautilus_window_slot_get_active (current_slot) &&
+           gtk_widget_get_mapped (GTK_WIDGET (current_slot)) &&
+           gtk_widget_get_root (GTK_WIDGET (current_slot)) == current_window;
+}
+
+static gboolean
+previewer_has_our_parent (void)
+{
+    if (!previewer_ready || exported_window_handle == NULL) { return FALSE; }
+    g_autoptr (GVariant) parent = g_dbus_proxy_get_cached_property (previewer_proxy, "ParentHandle");
+    /* Sushi >=45 publishes the actual owner. Older providers retain their
+     * established contract, which cannot distinguish another client's window. */
+    return parent == NULL || g_str_equal (g_variant_get_string (parent, NULL), exported_window_handle);
+}
+
+static void
+cancel_pending_show (void)
+{
+    show_generation++;
+    g_clear_handle_id (&pending_timeout, g_source_remove);
+    g_clear_pointer (&pending_show, pending_show_free);
+}
+
+static void
+preview_unavailable (void)
+{
+    gboolean notify = owner_is_live ();
+    cancel_pending_show ();
+    owner_closed = TRUE;
+    if (notify && NAUTILUS_IS_WINDOW (current_window))
+    {
+        AdwToast *toast = adw_toast_new (_("Preview unavailable. Check that Sushi is installed and running."));
+        adw_toast_set_use_markup (toast, FALSE);
+        nautilus_window_show_toast (NAUTILUS_WINDOW (current_window), toast);
+    }
+}
+
+static gboolean
+pending_show_expired (gpointer data)
+{
+    pending_timeout = 0;
+    preview_unavailable ();
+    return G_SOURCE_REMOVE;
+}
+
 static void create_new_proxy (void);
 static void previewer_selection_event (GDBusConnection *connection,
                                        const gchar     *sender_name,
@@ -77,37 +164,51 @@ static void previewer_selection_event (GDBusConnection *connection,
 #ifdef GDK_WINDOWING_WAYLAND
 typedef struct
 {
-    gchar *uri;
-    gboolean close_if_already_visible;
-    char *activation_token;
+    guint64 window_generation;
+    gboolean completed;
 } PreviewExportData;
 
 static void
-preview_export_data_free (gpointer _data)
+preview_export_data_free (gpointer pointer)
 {
-    PreviewExportData *data = _data;
-    g_free (data->uri);
-    g_free (data->activation_token);
+    PreviewExportData *data = pointer;
+    if (!data->completed)
+    {
+        export_pending = FALSE;
+        g_free (data);
+        try_show_file ();
+        return;
+    }
     g_free (data);
 }
-
 G_DEFINE_AUTOPTR_CLEANUP_FUNC (PreviewExportData, preview_export_data_free)
 
 static void
 wayland_window_handle_exported (GdkToplevel *toplevel,
-                                const char  *wayland_handle_str,
-                                gpointer     user_data)
+                                const char *handle,
+                                gpointer user_data)
 {
     PreviewExportData *data = user_data;
-    g_autofree char *wayland_handle = g_strdup_printf ("wayland:%s", wayland_handle_str);
-
-    real_call_show_file (data->uri, wayland_handle, data->close_if_already_visible, data->activation_token);
+    gboolean valid = initialized && data->window_generation == window_generation && current_window != NULL;
+    data->completed = TRUE;
+    export_pending = FALSE;
+    if (valid)
+    {
+        g_free (exported_window_handle);
+        exported_window_handle = g_strdup_printf ("wayland:%s", handle);
+    }
+    else
+    {
+        gdk_wayland_toplevel_drop_exported_handle (GDK_WAYLAND_TOPLEVEL (toplevel), handle);
+    }
+    try_show_file ();
 }
 #endif
 
 static void
 clear_exported_window_handle (void)
 {
+    window_generation++;
     if (exported_window_handle == NULL)
     {
         return;
@@ -202,6 +303,7 @@ on_ping_finished (GObject *object, GAsyncResult *res, gpointer user_data)
         PREVIEWER2_DBUS_IFACE, "SelectionEvent",
         g_dbus_proxy_get_object_path (previewer_proxy), NULL,
         G_DBUS_SIGNAL_FLAGS_NONE, previewer_selection_event, NULL, NULL);
+    try_show_file ();
 }
 
 static void
@@ -324,122 +426,120 @@ ensure_previewer_proxy (void)
 }
 
 static void
-previewer2_method_ready_cb (GObject      *source,
-                            GAsyncResult *res,
-                            gpointer      user_data)
+previewer2_method_ready_cb (GObject *source, GAsyncResult *res, gpointer user_data)
 {
-    GDBusProxy *proxy = G_DBUS_PROXY (source);
+    g_autoptr (PendingShow) show = user_data;
     g_autoptr (GError) error = NULL;
-
-    g_dbus_proxy_call_finish (proxy, res, &error);
-
-    if (error != NULL)
+    g_autoptr (GVariant) reply = g_dbus_proxy_call_finish (G_DBUS_PROXY (source), res, &error);
+    if (show == NULL) { return; }
+    if (inflight_generation == show->generation) { inflight_generation = 0; }
+    if (error != NULL && initialized && show->generation == show_generation && owner_is_live ())
     {
-        g_debug ("Unable to call method on NautilusPreviewer: %s", error->message);
+        preview_unavailable ();
     }
-}
-
-void
-nautilus_previewer_call_show_file (const gchar        *uri,
-                                   NautilusWindowSlot *slot,
-                                   gboolean            close_if_already_visible)
-{
-    g_set_weak_pointer (&current_slot, slot);
-
-    GtkRoot *window = gtk_widget_get_root (GTK_WIDGET (slot));
-
-    g_autoptr (GdkAppLaunchContext) launch_context = gdk_display_get_app_launch_context (
-        gtk_root_get_display (window));
-    g_autofree char *activation_token = g_app_launch_context_get_startup_notify_id (
-        G_APP_LAUNCH_CONTEXT (launch_context),
-        NULL,
-        NULL);
-
-    /* Reuse existing handle if called again for the same window. */
-    if (current_window == window &&
-        exported_window_handle != NULL)
-    {
-        real_call_show_file (uri, exported_window_handle, close_if_already_visible, activation_token);
-        return;
-    }
-
-    /* Otherwise, obtain a new window handle. */
-    clear_exported_window_handle ();
-    g_set_weak_pointer (&current_window, window);
-
-    GdkSurface *gdk_surface = gtk_native_get_surface (GTK_NATIVE (window));
-#ifdef GDK_WINDOWING_X11
-    if (GDK_IS_X11_DISPLAY (gtk_widget_get_display (GTK_WIDGET (window))))
-    {
-        guint xid = (guint) gdk_x11_surface_get_xid (gdk_surface);
-        g_autofree char *window_handle = g_strdup_printf ("x11:%x", xid);
-
-        real_call_show_file (uri, window_handle, close_if_already_visible, activation_token);
-        return;
-    }
-#endif
-#ifdef GDK_WINDOWING_WAYLAND
-    if (GDK_IS_WAYLAND_DISPLAY (gtk_widget_get_display (GTK_WIDGET (window))))
-    {
-        g_autoptr (PreviewExportData) data = g_new0 (PreviewExportData, 1);
-
-        data->uri = g_strdup (uri);
-        data->close_if_already_visible = close_if_already_visible;
-        data->activation_token = g_strdup (activation_token);
-
-        if (gdk_wayland_toplevel_export_handle (GDK_WAYLAND_TOPLEVEL (gdk_surface),
-                                                wayland_window_handle_exported,
-                                                data,
-                                                preview_export_data_free))
-        {
-            /* Don't let autoptr free data successfully taken by the call. */
-            (void) g_steal_pointer (&data);
-            return;
-        }
-    }
-#endif
-
-    g_warning ("Couldn't export handle, unsupported windowing system");
-
-    /* Let's use a fallback, so at least a preview will be displayed */
-    real_call_show_file (uri, "x11:0", close_if_already_visible, activation_token);
+    try_show_file ();
 }
 
 static void
-real_call_show_file (const gchar *uri,
-                     const gchar *window_handle,
-                     gboolean     close_if_already_visible,
-                     const char  *activation_token)
+try_show_file (void)
 {
-    g_set_str (&exported_window_handle, window_handle);
-
-    if (!ensure_previewer_proxy ())
+    if (pending_show == NULL) { return; }
+    if (!owner_is_live ()) { cancel_pending_show (); return; }
+    NautilusFilesView *view = nautilus_window_slot_get_current_view (current_slot);
+    GtkWidget *focus = gtk_root_get_focus (current_window);
+    if (focus != NULL && view != NULL && focus != GTK_WIDGET (view) &&
+        !gtk_widget_is_ancestor (focus, GTK_WIDGET (view)))
     {
+        cancel_pending_show ();
+        owner_closed = TRUE;
         return;
     }
-
-    if (activation_token == NULL)
+    if (g_get_monotonic_time () >= pending_show->expires) { preview_unavailable (); return; }
+    ensure_previewer_proxy ();
+    if (exported_window_handle == NULL)
     {
-        activation_token = "";
+        if (export_pending) { return; }
+        GdkSurface *surface = gtk_native_get_surface (GTK_NATIVE (current_window));
+#ifdef GDK_WINDOWING_X11
+        if (GDK_IS_X11_SURFACE (surface))
+        {
+            exported_window_handle = g_strdup_printf ("x11:%x", (guint) gdk_x11_surface_get_xid (surface));
+        }
+        else
+#endif
+#ifdef GDK_WINDOWING_WAYLAND
+        if (GDK_IS_WAYLAND_TOPLEVEL (surface))
+        {
+            g_autoptr (PreviewExportData) data = g_new0 (PreviewExportData, 1);
+            data->window_generation = window_generation;
+            export_pending = TRUE;
+            if (gdk_wayland_toplevel_export_handle (GDK_WAYLAND_TOPLEVEL (surface),
+                wayland_window_handle_exported, data, preview_export_data_free))
+            {
+                (void) g_steal_pointer (&data);
+                return;
+            }
+            preview_unavailable ();
+            return;
+        }
+        else
+#endif
+        {
+            preview_unavailable ();
+            return;
+        }
     }
+    if (!previewer_ready || inflight_generation != 0) { return; }
+    g_autoptr (PendingShow) show = g_steal_pointer (&pending_show);
+    g_clear_handle_id (&pending_timeout, g_source_remove);
+    inflight_generation = show->generation;
+    gint remaining = MAX (1, (show->expires - g_get_monotonic_time ()) / 1000);
+    GVariant *parameters = g_variant_new ("(ssbs)", show->uri, exported_window_handle,
+        show->close_if_already_visible, show->activation_token != NULL ? show->activation_token : "");
+    g_dbus_proxy_call (previewer_proxy, "ShowFile", parameters, G_DBUS_CALL_FLAGS_NONE,
+        remaining, cancellable, previewer2_method_ready_cb, g_steal_pointer (&show));
+}
 
-    GVariant *parameters = g_variant_new (
-        "(ssbs)",
-        uri, window_handle, close_if_already_visible, activation_token);
-    g_dbus_proxy_call (previewer_proxy,
-                       "ShowFile",
-                       parameters,
-                       G_DBUS_CALL_FLAGS_NONE,
-                       -1,
-                       cancellable,
-                       previewer2_method_ready_cb,
-                       NULL);
+void
+nautilus_previewer_call_show_file (const char *uri, NautilusWindowSlot *slot,
+                                  gboolean close_if_already_visible)
+{
+    if (!nautilus_window_slot_get_active (slot) || gtk_widget_get_root (GTK_WIDGET (slot)) == NULL) { return; }
+    if (slot_signals == NULL)
+    {
+        slot_signals = g_signal_group_new (NAUTILUS_TYPE_WINDOW_SLOT);
+        g_signal_group_connect (slot_signals, "notify::active", G_CALLBACK (owner_active_changed), NULL);
+        g_signal_group_connect (slot_signals, "unmap", G_CALLBACK (owner_unmapped), NULL);
+    }
+    g_signal_group_set_target (slot_signals, slot);
+    g_set_weak_pointer (&current_slot, slot);
+    GtkRoot *window = gtk_widget_get_root (GTK_WIDGET (slot));
+    if (current_window != window)
+    {
+        clear_exported_window_handle ();
+        g_set_weak_pointer (&current_window, window);
+    }
+    cancel_pending_show ();
+    owner_closed = FALSE;
+    pending_show = g_new0 (PendingShow, 1);
+    pending_show->uri = g_strdup (uri);
+    pending_show->close_if_already_visible = close_if_already_visible;
+    pending_show->generation = show_generation;
+    pending_show->expires = g_get_monotonic_time () + 5 * G_TIME_SPAN_SECOND;
+    g_autoptr (GdkAppLaunchContext) context = gdk_display_get_app_launch_context (gtk_root_get_display (window));
+    pending_show->activation_token = g_app_launch_context_get_startup_notify_id (G_APP_LAUNCH_CONTEXT (context), NULL, NULL);
+    pending_timeout = g_timeout_add (5000, pending_show_expired, NULL);
+    try_show_file ();
 }
 
 void
 nautilus_previewer_call_close (void)
 {
-    if (!ensure_previewer_proxy ())
+    gboolean owns_preview = !owner_closed &&
+        (inflight_generation != 0 || previewer_has_our_parent ());
+    owner_closed = TRUE;
+    cancel_pending_show ();
+    if (!previewer_ready || !owns_preview)
     {
         return;
     }
@@ -449,7 +549,7 @@ nautilus_previewer_call_close (void)
                        "Close",
                        NULL,
                        G_DBUS_CALL_FLAGS_NO_AUTO_START,
-                       -1,
+                       5000,
                        cancellable,
                        previewer2_method_ready_cb,
                        NULL);
@@ -464,7 +564,7 @@ previewer_selection_event (GDBusConnection *connection,
                            GVariant        *parameters,
                            gpointer         user_data)
 {
-    if (current_slot == NULL)
+    if (!owner_is_live () || !previewer_has_our_parent ())
     {
         return;
     }
@@ -508,6 +608,9 @@ void
 nautilus_previewer_teardown (GDBusConnection *connection)
 {
     initialized = FALSE;
+    cancel_pending_show ();
+    owner_closed = TRUE;
+    inflight_generation = 0;
     discovery_generation++;
     g_cancellable_cancel (cancellable);
     clear_proxy ();
@@ -523,8 +626,17 @@ nautilus_previewer_teardown (GDBusConnection *connection)
     previewer_index = 0;
     retry_after = 0;
     clear_exported_window_handle ();
+    g_clear_object (&slot_signals);
     g_clear_weak_pointer (&current_window);
     g_clear_weak_pointer (&current_slot);
+}
+
+gboolean
+nautilus_previewer_is_active_for_slot (NautilusWindowSlot *slot)
+{
+    return slot != NULL && current_slot == slot && !owner_closed &&
+           owner_is_live () && (pending_show != NULL || inflight_generation != 0 ||
+                                (previewer_has_our_parent () && nautilus_previewer_is_visible ()));
 }
 
 gboolean

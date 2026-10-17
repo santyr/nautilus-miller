@@ -135,3 +135,20 @@ python3 tools/miller/with-test-session.py -- python3 tools/miller/with-test-home
 ```
 
 On GTK4.22.5/libadwaita1.9.4 the empty-replacement, immediate switch/close retains the old child and exits23; separated actions release it and exit0. A focusable replacement does not reproduce. This is an explicit inherited observation, not a passing preview test or a waived resource acceptance requirement. The application tests now cover both a pre-existing background tab and immediate new-tab/close during decoding. Nautilus clears remaining focus only when closing an inactive slot that still owns it, using GTK’s existing focus API. Both assert weak destruction; genuine Ctrl+L remains focused when closing another tab. The pure library probe is retained without that application guard.
+
+## Actual external Sushi acceptance
+
+Build both profiles without installing the canonical build, then run the maintained real-provider suite:
+
+```sh
+meson setup build-preview-canonical -Dprofile= -Dtests=all
+meson compile -C build-miller
+meson compile -C build-preview-canonical
+python3 test/miller/test-quick-look.py -v
+```
+
+The suite uses installed `/usr/libexec/org.gnome.NautilusPreviewer` on owned private buses/compositors and mounted disposable Home. It checks genuine Space/Down/Escape/repeated Space, native tab transitions, focus return, absence, service restart, latest pending selection, pending entry/tab invalidation and another client's real exported window handle. Tab creation/selection/closure use native APIs; they are not claimed as genuine tab key input. Real D-Bus `ShowFile` messages must match the expected URI/order and have method-return acknowledgments from the actual service; the basic case also requires its real `SelectionEvent`. GLib parses message bodies, including escaped foreign-window handles.
+
+`--without-previewer` writes an activation override only inside owned test XDG data before the private bus starts. It never modifies the installed service. Restart tests launch the real installed provider with its existing `SUSHI_PERSIST` setting, verify its D-Bus PID/executable, and crash/reap only the retained `GSubprocess` child. No host PID is signaled. Pending-invalidation cases observe the whole deadline and then prove a fresh eligible request still works. Cross-client cases use a second real GTK window and actual provider calls, without fabricating visibility or selection signals.
+
+Ordinary Meson runs explicitly skip the external-service cases. The separate suite rejects skips; installed Sushi and both built profiles are required. These fixtures isolate files, settings, bus and compositor; they do not yet provide a private network namespace. Real SFTP/SMB and network isolation remain separate required work.

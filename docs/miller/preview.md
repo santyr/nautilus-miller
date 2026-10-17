@@ -1,6 +1,6 @@
 # Preview providers, privacy and limits
 
-These are development-build capabilities. The installed replacement RPM has not been updated by the completion work. External Sushi acceptance in both profiles remains a separate gate.
+These are development-build capabilities. The installed replacement RPM has not been updated by the completion work. Acceptance results and remaining gates are recorded separately in the [acceptance ledger](acceptance.md).
 
 ## Existing providers
 
@@ -14,6 +14,14 @@ These are development-build capabilities. The installed replacement RPM has not 
 | External inspection | Existing Nautilus/Sushi D-Bus contract; Space remains the external preview action. |
 
 Reference host providers: Fedora 44, glycin libs/GTK/loaders 2.1.5-1.fc44, GNOME Desktop 4 44.5-1.fc44, papers-thumbnailer 49.8-1.fc44 and gst-thumbnailers 1.0.0-1.fc44. Other systems may have different installed format support. A provider failure is presented as unavailable; Open and Properties remain native actions.
+
+## External Quick Look
+
+Space uses the existing Nautilus/Sushi service. Sushi owns its external window, arrow navigation, repeated Space and Escape. Nautilus routes navigation to the owning active tab and closes its preview when that tab changes or closes. If closing Sushi leaves a newly selected tab without focus, the existing slot focus restoration handles it; an already focused location entry is preserved.
+
+While the service starts or restarts, the wrapper retains the latest requested selection for up to five seconds. A later selection replaces the pending target. Tab closure or switching cancels it; entering the location entry before it is delivered prevents a late preview from stealing focus. Failure displays **Preview unavailable. Check that Sushi is installed and running.** A fresh Space retries through native service discovery.
+
+The canonical service is shared with other clients. Sushi 45 and newer expose `ParentHandle`; Nautilus compares that property with its existing exported window handle before processing automatic selection updates, preview navigation or Close. Another client's preview is left alone. Older providers without this property retain their legacy behavior and cannot provide that ownership isolation. The reference host uses Sushi 50.0-1.fc44. No Sushi code is embedded and no additional production service is introduced.
 
 ## Bounded work
 

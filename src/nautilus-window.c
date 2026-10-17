@@ -922,6 +922,12 @@ nautilus_window_on_undo_changed (NautilusFileUndoManager *manager,
 }
 
 void
+nautilus_window_show_toast (NautilusWindow *window, AdwToast *toast)
+{
+    adw_toast_overlay_add_toast (window->toast_overlay, toast);
+}
+
+void
 nautilus_window_show_operation_notification (NautilusWindow *window,
                                              gchar          *main_label,
                                              GFile          *folder_to_open,
@@ -1387,6 +1393,16 @@ set_active_slot (NautilusWindow     *window,
 
         on_location_changed (window);
         update_cursor (window);
+
+        /* A preview window can leave no focused widget when it closes during
+         * a tab change. Use the slot's existing saved-column/search focus path
+         * when GTK has no page focus to restore. */
+        if (window->active_slot == new_slot &&
+            nautilus_window_slot_get_current_view (new_slot) != NULL &&
+            gtk_root_get_focus (GTK_ROOT (window)) == NULL)
+        {
+            gtk_widget_grab_focus (GTK_WIDGET (new_slot));
+        }
     }
 
     g_object_notify_by_pspec (G_OBJECT (window), properties[PROP_ACTIVE_SLOT]);

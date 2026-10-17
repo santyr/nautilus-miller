@@ -36,6 +36,7 @@ void nautilus_previewer_call_show_file (const gchar        *uri,
 void nautilus_previewer_call_close     (void);
 
 gboolean nautilus_previewer_is_visible (void);
+gboolean nautilus_previewer_is_active_for_slot (NautilusWindowSlot *slot);
 
 void  nautilus_previewer_setup         (void);
 /* Internal dependency injection for private-bus discovery tests. */

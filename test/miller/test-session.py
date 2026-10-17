@@ -29,6 +29,21 @@ class Session(unittest.TestCase):
                                 capture_output=True, text=True)
         self.assertEqual(result.returncode, 23, result.stderr)
 
+    def test_previewer_absence_uses_private_service_override(self):
+        code = '''import os,pathlib,subprocess
+path=pathlib.Path(os.environ['XDG_DATA_HOME'])/'dbus-1/services/org.gnome.NautilusPreviewer.service'
+assert 'Exec=/usr/bin/false' in path.read_text()
+assert os.environ['MILLER_TEST_PREVIEWER_DISABLED']=='1'
+result=subprocess.run(['gdbus','call','--session','--dest','org.freedesktop.DBus',
+'--object-path','/org/freedesktop/DBus','--method','org.freedesktop.DBus.StartServiceByName',
+'org.gnome.NautilusPreviewer','0'],capture_output=True,text=True,timeout=5)
+assert result.returncode!=0,result.stdout
+assert 'ChildExited' in result.stderr,result.stderr
+'''
+        result=subprocess.run([sys.executable,str(SCRIPT),'--without-previewer','--',sys.executable,'-c',code],
+                              capture_output=True,text=True,timeout=20)
+        self.assertEqual(result.returncode,0,result.stderr)
+
     def test_inside_refuses_unowned_runtime(self):
         result = subprocess.run([sys.executable, str(SCRIPT), '--inside', '--', 'true'],
             env={**os.environ, 'XDG_RUNTIME_DIR': f'/run/user/{os.getuid()}'},

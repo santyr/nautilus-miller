@@ -1234,7 +1234,7 @@ nautilus_files_view_preview_update (NautilusFilesView *view)
     g_autolist (NautilusFile) selection = NULL;
 
     if (!view->active ||
-        !nautilus_previewer_is_visible ())
+        !nautilus_previewer_is_active_for_slot (view->slot))
     {
         return;
     }

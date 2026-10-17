@@ -63,6 +63,8 @@ def inside(command):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--inside', action='store_true', help=argparse.SUPPRESS)
+    parser.add_argument('--without-previewer', action='store_true',
+                        help='disable canonical previewer activation on this private bus')
     parser.add_argument('command', nargs=argparse.REMAINDER)
     args = parser.parse_args()
     command = args.command
@@ -86,6 +88,13 @@ def main():
             guard = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(guard)
             env['XDG_CACHE_HOME'] = str(guard.masked_home_cache(create=True))
+        if args.without_previewer or env.get('MILLER_TEST_PREVIEWER_DISABLED') == '1':
+            services = root / 'data/dbus-1/services'
+            services.mkdir(mode=0o700, parents=True)
+            record = services / 'org.gnome.NautilusPreviewer.service'
+            with os.fdopen(os.open(record, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), 'w') as output:
+                output.write('[D-BUS Service]\nName=org.gnome.NautilusPreviewer\nExec=/usr/bin/false\n')
+            env['MILLER_TEST_PREVIEWER_DISABLED'] = '1'
         (root / 'tmp').mkdir(mode=0o700)
         env['TMPDIR'] = str(root / 'tmp')
         env.pop('DISPLAY', None)

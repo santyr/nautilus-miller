@@ -2,6 +2,10 @@
 #include <test-utilities.h>
 #include <unistd.h>
 #include <math.h>
+#include <gtk/gtk.h>
+#ifdef GDK_WINDOWING_WAYLAND
+#include <gdk/wayland/gdkwayland.h>
+#endif
 #include "nautilus-application.h"
 #include "nautilus-file.h"
 #include "nautilus-file-utilities.h"
@@ -10,6 +14,7 @@
 #include "nautilus-miller-preview.h"
 #include "nautilus-miller-view.h"
 #include "nautilus-preferences-dialog.h"
+#include "nautilus-previewer.h"
 #include "nautilus-view-model.h"
 #include "nautilus-resources.h"
 #include "nautilus-tag-manager.h"
@@ -26,6 +31,7 @@ typedef struct
 } Fixture;
 static MillerTestInput *input;
 static char persistent_setup_marker;
+static GSubprocess *owned_sushi;
 
 static void
 pump (guint ms)
@@ -286,6 +292,402 @@ key_chord (guint key, gboolean shift)
     g_assert_no_error (error); pump (60);
 }
 static void
+plain_key (guint key)
+{
+    g_autoptr (GError) error = NULL;
+    g_assert_true (miller_test_input_key (input, key, TRUE, &error));
+    g_assert_true (miller_test_input_key (input, key, FALSE, &error));
+    g_assert_no_error (error); pump (60);
+}
+
+static void
+wait_quicklook (gboolean visible)
+{
+    g_test_message ("Waiting for actual Sushi visible=%d (current=%d)", visible, nautilus_previewer_is_visible ());
+    gint64 deadline = g_get_monotonic_time () + 8 * G_TIME_SPAN_SECOND;
+    while (nautilus_previewer_is_visible () != visible)
+    {
+        g_assert_cmpint (g_get_monotonic_time (), <, deadline); pump (10);
+    }
+    pump (100);
+}
+
+static guint
+canonical_sushi_owner (void)
+{
+    g_autoptr (GDBusConnection) bus = g_bus_get_sync (G_BUS_TYPE_SESSION, NULL, NULL);
+    g_assert_nonnull (bus);
+    g_autoptr (GVariant) owner = NULL;
+    gint64 deadline = g_get_monotonic_time () + 8 * G_TIME_SPAN_SECOND;
+    while (owner == NULL)
+    {
+        owner = g_dbus_connection_call_sync (bus, "org.freedesktop.DBus", "/org/freedesktop/DBus",
+            "org.freedesktop.DBus", "GetConnectionUnixProcessID",
+            g_variant_new ("(s)", "org.gnome.NautilusPreviewer"), G_VARIANT_TYPE ("(u)"),
+            G_DBUS_CALL_FLAGS_NONE, 1000, NULL, NULL);
+        g_assert_cmpint (g_get_monotonic_time (), <, deadline); pump (20);
+    }
+    guint pid; g_variant_get (owner, "(u)", &pid);
+    g_autofree char *proc = g_strdup_printf ("/proc/%u/exe", pid);
+    g_autofree char *exe = g_file_read_link (proc, NULL);
+    g_assert_nonnull (exe); g_assert_true (g_str_has_suffix (exe, "/gjs-console"));
+    g_test_message ("Actual canonical Sushi process %u (%s)", pid, exe);
+    return pid;
+}
+
+static void
+start_owned_sushi (void)
+{
+    g_assert_null (owned_sushi);
+    g_assert_nonnull (input); g_assert_nonnull (g_getenv ("MILLER_TEST_HOME"));
+    g_assert_cmpstr (g_getenv ("MILLER_TEST_PREVIEWER_DISABLED"), ==, "1");
+    g_autoptr (GSubprocessLauncher) launcher = g_subprocess_launcher_new (G_SUBPROCESS_FLAGS_NONE);
+    g_subprocess_launcher_setenv (launcher, "SUSHI_PERSIST", "1", TRUE);
+    g_subprocess_launcher_unsetenv (launcher, "G_DBUS_DEBUG");
+    g_autoptr (GError) error = NULL;
+    owned_sushi = g_subprocess_launcher_spawn (launcher, &error, "/usr/libexec/org.gnome.NautilusPreviewer", NULL);
+    g_assert_no_error (error); g_assert_nonnull (owned_sushi);
+    guint actual = canonical_sushi_owner ();
+    const char *identifier = g_subprocess_get_identifier (owned_sushi);
+    g_assert_nonnull (identifier);
+    g_assert_cmpuint (actual, ==, g_ascii_strtoull (identifier, NULL, 10));
+}
+
+static void
+stop_owned_sushi (void)
+{
+    if (owned_sushi == NULL) { return; }
+    /* Only the child retained by GSubprocess; never a discovered host PID. */
+    g_subprocess_force_exit (owned_sushi);
+    g_autoptr (GError) error = NULL;
+    g_assert_true (g_subprocess_wait (owned_sushi, NULL, &error));
+    g_assert_no_error (error); g_clear_object (&owned_sushi);
+}
+
+static void
+test_quicklook_basic (void)
+{
+    if (g_strcmp0 (g_getenv ("MILLER_TEST_QUICK_LOOK"), "1") != 0)
+    {
+        g_test_skip ("Requires actual installed canonical Sushi in an owned private session"); return;
+    }
+    g_assert_nonnull (input);
+    g_assert_nonnull (g_getenv ("MILLER_TEST_HOME"));
+    Fixture f = {0}; setup (&f, NULL);
+    canonical_sushi_owner ();
+    gint64 deadline;
+    g_autoptr (GFile) second = g_file_get_child (f.child, "two.txt");
+    g_assert_true (g_file_replace_contents (second, "preview beta", 12, NULL, FALSE, 0, NULL, NULL, NULL));
+    NautilusFilesView *view = nautilus_window_slot_get_current_view (f.slot);
+    g_autoptr (NautilusFile) two = nautilus_file_get (second);
+    deadline = g_get_monotonic_time () + 8 * G_TIME_SPAN_SECOND;
+    while (nautilus_view_model_get_item_for_file (nautilus_files_view_get_private_model (view), two) == NULL)
+    {
+        g_assert_cmpint (g_get_monotonic_time (), <, deadline); pump (10);
+    }
+    settle (&f); select_one (view, f.one); gtk_widget_grab_focus (GTK_WIDGET (view)); settle (&f);
+    g_assert_true (gtk_window_is_active (GTK_WINDOW (f.window)));
+    plain_key (GDK_KEY_space); wait_quicklook (TRUE);
+    deadline = g_get_monotonic_time () + 8 * G_TIME_SPAN_SECOND;
+    while (gtk_window_is_active (GTK_WINDOW (f.window)))
+    {
+        g_assert_cmpint (g_get_monotonic_time (), <, deadline); pump (10);
+    }
+    plain_key (GDK_KEY_Down);
+    deadline = g_get_monotonic_time () + 8 * G_TIME_SPAN_SECOND;
+    for (;;)
+    {
+        g_autolist (NautilusFile) selected = nautilus_files_view_get_selection (view);
+        if (g_list_length (selected) == 1 && selected->data == two) { break; }
+        g_assert_cmpint (g_get_monotonic_time (), <, deadline); pump (10);
+    }
+    assert_owner (&f, view, f.child);
+    plain_key (GDK_KEY_Escape); wait_quicklook (FALSE);
+    deadline = g_get_monotonic_time () + 8 * G_TIME_SPAN_SECOND;
+    while (!gtk_window_is_active (GTK_WINDOW (f.window)))
+    {
+        g_assert_cmpint (g_get_monotonic_time (), <, deadline); pump (10);
+    }
+    plain_key (GDK_KEY_space); wait_quicklook (TRUE);
+    plain_key (GDK_KEY_space); wait_quicklook (FALSE);
+    assert_owner (&f, view, f.child);
+    teardown (&f, NULL);
+}
+
+static void
+test_quicklook_restart (gconstpointer replace_selection)
+{
+    if (g_strcmp0 (g_getenv ("MILLER_TEST_QUICK_LOOK"), "restart") != 0)
+    {
+        g_test_skip ("Requires the owned real Sushi restart fixture"); return;
+    }
+    g_assert_nonnull (owned_sushi);
+    Fixture f = {0}; setup (&f, NULL);
+    g_autoptr (GFile) second = g_file_get_child (f.child, "two.txt");
+    g_assert_true (g_file_replace_contents (second, "preview beta", 12, NULL, FALSE, 0, NULL, NULL, NULL));
+    NautilusFilesView *view = nautilus_window_slot_get_current_view (f.slot);
+    g_autoptr (NautilusFile) two = nautilus_file_get (second);
+    gint64 deadline = g_get_monotonic_time () + 8 * G_TIME_SPAN_SECOND;
+    while (nautilus_view_model_get_item_for_file (nautilus_files_view_get_private_model (view), two) == NULL)
+    {
+        g_assert_cmpint (g_get_monotonic_time (), <, deadline); pump (10);
+    }
+    settle (&f); select_one (view, f.one); gtk_widget_grab_focus (GTK_WIDGET (view)); settle (&f);
+    plain_key (GDK_KEY_space); wait_quicklook (TRUE);
+    /* Crash only our retained real provider while its window owns focus. The
+     * private activation override prevents an uncontrolled replacement. */
+    stop_owned_sushi (); pump (100); wait_quicklook (FALSE);
+    deadline = g_get_monotonic_time () + 8 * G_TIME_SPAN_SECOND;
+    while (!gtk_window_is_active (GTK_WINDOW (f.window)))
+    {
+        g_assert_cmpint (g_get_monotonic_time (), <, deadline); pump (10);
+    }
+    g_assert_nonnull (gtk_root_get_focus (GTK_ROOT (f.window)));
+    plain_key (GDK_KEY_space); /* Real request while no provider owns the name. */
+    if (replace_selection != NULL)
+    {
+        plain_key (GDK_KEY_Down);
+        g_autolist (NautilusFile) selected = nautilus_files_view_get_selection (view);
+        g_assert_cmpuint (g_list_length (selected), ==, 1); g_assert_true (selected->data == two);
+    }
+    start_owned_sushi (); wait_quicklook (TRUE);
+    assert_owner (&f, view, f.child);
+    plain_key (GDK_KEY_Escape); wait_quicklook (FALSE);
+    teardown (&f, NULL);
+}
+
+#ifdef GDK_WINDOWING_WAYLAND
+static void
+foreign_window_exported (GdkToplevel *toplevel, const char *handle, gpointer data)
+{
+    *(char **) data = g_strdup_printf ("wayland:%s", handle);
+}
+#endif
+
+static void
+test_quicklook_foreign_owner (gconstpointer close_owner)
+{
+#ifndef GDK_WINDOWING_WAYLAND
+    g_test_skip ("Requires the owned Wayland compositor");
+#else
+    if (g_strcmp0 (g_getenv ("MILLER_TEST_QUICK_LOOK"), "foreign") != 0)
+    {
+        g_test_skip ("Requires actual shared Sushi ownership fixture"); return;
+    }
+    Fixture f = {0}; setup (&f, NULL);
+    canonical_sushi_owner ();
+    g_autoptr (GFile) second = g_file_get_child (f.child, "two.txt");
+    g_assert_true (g_file_replace_contents (second, "preview beta", 12, NULL, FALSE, 0, NULL, NULL, NULL));
+    NautilusFilesView *view = nautilus_window_slot_get_current_view (f.slot);
+    g_autoptr (NautilusFile) two = nautilus_file_get (second);
+    gint64 deadline = g_get_monotonic_time () + 8 * G_TIME_SPAN_SECOND;
+    while (nautilus_view_model_get_item_for_file (nautilus_files_view_get_private_model (view), two) == NULL)
+    {
+        g_assert_cmpint (g_get_monotonic_time (), <, deadline); pump (10);
+    }
+    select_one (view, f.one); gtk_widget_grab_focus (GTK_WIDGET (view)); settle (&f);
+    plain_key (GDK_KEY_space); wait_quicklook (TRUE);
+    plain_key (GDK_KEY_Escape); wait_quicklook (FALSE);
+    /* A second client uses the actual installed contract and an actual GTK
+     * foreign-window handle. No SelectionEvent or visibility is fabricated. */
+    GtkWidget *foreign = gtk_window_new ();
+    gtk_window_set_default_size (GTK_WINDOW (foreign), 300, 200);
+    gtk_window_present (GTK_WINDOW (foreign)); pump (100);
+    GdkSurface *surface = gtk_native_get_surface (GTK_NATIVE (foreign));
+    g_autofree char *handle = NULL;
+    g_assert_true (gdk_wayland_toplevel_export_handle (GDK_WAYLAND_TOPLEVEL (surface),
+        foreign_window_exported, &handle, NULL));
+    while (handle == NULL)
+    {
+        g_assert_cmpint (g_get_monotonic_time (), <, deadline); pump (10);
+    }
+    g_autoptr (GDBusConnection) bus = g_bus_get_sync (G_BUS_TYPE_SESSION, NULL, NULL);
+    g_autofree char *uri = g_file_get_uri (f.one);
+    g_autoptr (GError) error = NULL;
+    g_autoptr (GDBusProxy) proxy = g_dbus_proxy_new_sync (bus, G_DBUS_PROXY_FLAGS_DO_NOT_AUTO_START,
+        NULL, "org.gnome.NautilusPreviewer", "/org/gnome/NautilusPreviewer",
+        "org.gnome.NautilusPreviewer2", NULL, &error);
+    g_assert_no_error (error); g_assert_nonnull (proxy);
+    /* GDBusProxy addresses the actual unique owner, like the native wrapper,
+     * so the wire observer can match reply sender and request destination. */
+    g_autoptr (GVariant) reply = g_dbus_proxy_call_sync (proxy, "ShowFile",
+        g_variant_new ("(ssbs)", uri, handle, FALSE, ""),
+        G_DBUS_CALL_FLAGS_NO_AUTO_START, 2000, NULL, &error);
+    g_assert_no_error (error); g_assert_nonnull (reply); pump (300);
+    while (gtk_window_is_active (GTK_WINDOW (foreign)))
+    {
+        g_assert_cmpint (g_get_monotonic_time (), <, deadline); pump (10);
+    }
+    if (close_owner != NULL)
+    {
+        nautilus_window_new_tab (NAUTILUS_WINDOW (f.window));
+        g_clear_object (&f.slot); g_object_get (f.window, "active-slot", &f.slot, NULL); settle (&f);
+        g_assert_true (nautilus_previewer_is_visible ());
+    }
+    else
+    {
+        plain_key (GDK_KEY_Down); pump (300);
+        g_autolist (NautilusFile) selected = nautilus_files_view_get_selection (view);
+        g_assert_cmpuint (g_list_length (selected), ==, 1);
+        g_autoptr (GFile) location = nautilus_file_get_location (selected->data);
+        g_assert_true (g_file_equal (location, f.one));
+        assert_owner (&f, view, f.child);
+    }
+    /* Explicit test-client cleanup, independent of the wrapper under test. */
+    g_clear_pointer (&reply, g_variant_unref);
+    reply = g_dbus_proxy_call_sync (proxy, "Close", NULL, G_DBUS_CALL_FLAGS_NO_AUTO_START, 2000, NULL, &error);
+    g_assert_no_error (error); wait_quicklook (FALSE);
+    gdk_wayland_toplevel_drop_exported_handle (GDK_WAYLAND_TOPLEVEL (surface), handle + strlen ("wayland:"));
+    gtk_window_destroy (GTK_WINDOW (foreign));
+    teardown (&f, NULL);
+#endif
+}
+
+static void
+test_quicklook_pending_owner (gconstpointer action_data)
+{
+    if (g_strcmp0 (g_getenv ("MILLER_TEST_QUICK_LOOK"), "pending") != 0)
+    {
+        g_test_skip ("Requires the owned real Sushi pending-request fixture"); return;
+    }
+    guint action = GPOINTER_TO_UINT (action_data);
+    Fixture f = {0}; setup (&f, NULL);
+    NautilusFilesView *view = nautilus_window_slot_get_current_view (f.slot);
+    select_one (view, f.one); gtk_widget_grab_focus (GTK_WIDGET (view)); settle (&f);
+    plain_key (GDK_KEY_space); wait_quicklook (TRUE);
+    stop_owned_sushi (); pump (100); wait_quicklook (FALSE);
+    plain_key (GDK_KEY_space);
+    GtkWidget *entry = NULL;
+    NautilusWindowSlot *weak = NULL;
+    AdwTabView *tabs = ADW_TAB_VIEW (find_type (f.window, ADW_TYPE_TAB_VIEW));
+    AdwTabPage *old = adw_tab_view_get_selected_page (tabs);
+    if (action == 0)
+    {
+        key_chord (GDK_KEY_l, FALSE);
+        entry = gtk_root_get_focus (GTK_ROOT (f.window));
+        g_assert_true (GTK_IS_EDITABLE (entry));
+    }
+    else
+    {
+        weak = f.slot;
+        g_object_add_weak_pointer (G_OBJECT (weak), (gpointer *) &weak);
+        nautilus_window_new_tab (NAUTILUS_WINDOW (f.window));
+        g_clear_object (&f.slot);
+        if (action == 2) { adw_tab_view_close_page (tabs, old); }
+        g_object_get (f.window, "active-slot", &f.slot, NULL); settle (&f);
+        if (action == 2) { g_assert_null (weak); }
+    }
+    start_owned_sushi ();
+    /* Observe the complete pending-request lifetime, including the original
+     * deadline. A provider appearing later must not steal entry/new-tab focus. */
+    gint64 end = g_get_monotonic_time () + 5100 * 1000;
+    while (g_get_monotonic_time () < end)
+    {
+        g_assert_false (nautilus_previewer_is_visible ()); pump (10);
+    }
+    if (action == 0)
+    {
+        g_assert_true (gtk_root_get_focus (GTK_ROOT (f.window)) == entry);
+        plain_key (GDK_KEY_Escape);
+        assert_owner (&f, view, f.child);
+    }
+    else if (action == 1)
+    {
+        adw_tab_view_set_selected_page (tabs, old);
+        g_clear_object (&f.slot); g_object_get (f.window, "active-slot", &f.slot, NULL); settle (&f);
+    }
+    if (weak != NULL) { g_object_remove_weak_pointer (G_OBJECT (weak), (gpointer *) &weak); }
+    if (action != 2)
+    {
+        plain_key (GDK_KEY_space); wait_quicklook (TRUE);
+        plain_key (GDK_KEY_Escape); wait_quicklook (FALSE);
+    }
+    teardown (&f, NULL);
+}
+
+static void
+test_quicklook_owner (gconstpointer close_owner)
+{
+    if (g_strcmp0 (g_getenv ("MILLER_TEST_QUICK_LOOK"), "owner") != 0)
+    {
+        g_test_skip ("Requires actual installed Sushi ownership fixture"); return;
+    }
+    g_assert_nonnull (input); g_assert_nonnull (g_getenv ("MILLER_TEST_HOME"));
+    Fixture f = {0}; setup (&f, NULL);
+    canonical_sushi_owner ();
+    if (close_owner != NULL)
+    {
+        nautilus_window_open_location_full (NAUTILUS_WINDOW (f.window), f.other,
+            NAUTILUS_OPEN_FLAG_NEW_TAB | NAUTILUS_OPEN_FLAG_DONT_MAKE_ACTIVE, NULL);
+        settle (&f);
+    }
+    NautilusFilesView *view = nautilus_window_slot_get_current_view (f.slot);
+    select_one (view, f.one); gtk_widget_grab_focus (GTK_WIDGET (view)); settle (&f);
+    plain_key (GDK_KEY_space); wait_quicklook (TRUE);
+    AdwTabView *tabs = ADW_TAB_VIEW (find_type (f.window, ADW_TYPE_TAB_VIEW));
+    AdwTabPage *old = adw_tab_view_get_selected_page (tabs);
+    NautilusWindowSlot *weak = f.slot;
+    g_object_add_weak_pointer (G_OBJECT (weak), (gpointer *) &weak);
+    if (close_owner == NULL)
+    {
+        nautilus_window_new_tab (NAUTILUS_WINDOW (f.window));
+    }
+    g_clear_object (&f.slot);
+    if (close_owner != NULL) { adw_tab_view_close_page (tabs, old); }
+    g_object_get (f.window, "active-slot", &f.slot, NULL); settle (&f);
+    wait_quicklook (FALSE);
+    g_assert_true (nautilus_window_slot_get_current_view (f.slot) ==
+                   g_object_get_data (G_OBJECT (f.window), "nautilus-active-file-view"));
+    if (close_owner != NULL) { g_assert_null (weak); }
+    else
+    {
+        g_assert_nonnull (weak);
+        /* Once closed on tab switch, provider input must not change this
+         * background selection. Returning to its tab permits a new preview. */
+        g_autolist (NautilusFile) selected = nautilus_files_view_get_selection (view);
+        g_assert_cmpuint (g_list_length (selected), ==, 1);
+        g_autoptr (GFile) location = nautilus_file_get_location (selected->data);
+        g_assert_true (g_file_equal (location, f.one));
+        adw_tab_view_set_selected_page (tabs, old);
+        g_clear_object (&f.slot); g_object_get (f.window, "active-slot", &f.slot, NULL); settle (&f);
+        GtkWidget *focus = gtk_root_get_focus (GTK_ROOT (f.window));
+        g_test_message ("Returned tab: window-active=%d focus=%s in-listing=%d",
+            gtk_window_is_active (GTK_WINDOW (f.window)), focus ? G_OBJECT_TYPE_NAME (focus) : "none",
+            focus ? gtk_widget_is_ancestor (focus, GTK_WIDGET (view)) : FALSE);
+        plain_key (GDK_KEY_space); wait_quicklook (TRUE);
+        plain_key (GDK_KEY_Escape); wait_quicklook (FALSE);
+    }
+    if (weak != NULL) { g_object_remove_weak_pointer (G_OBJECT (weak), (gpointer *) &weak); }
+    teardown (&f, NULL);
+}
+
+static void
+test_quicklook_missing (void)
+{
+    if (g_strcmp0 (g_getenv ("MILLER_TEST_QUICK_LOOK"), "missing") != 0)
+    {
+        g_test_skip ("Requires the private previewer-absence fixture"); return;
+    }
+    g_assert_nonnull (input); g_assert_nonnull (g_getenv ("MILLER_TEST_HOME"));
+    g_assert_cmpstr (g_getenv ("MILLER_TEST_PREVIEWER_DISABLED"), ==, "1");
+    Fixture f = {0}; setup (&f, NULL);
+    NautilusFilesView *view = nautilus_window_slot_get_current_view (f.slot);
+    select_one (view, f.one); gtk_widget_grab_focus (GTK_WIDGET (view)); settle (&f);
+    GtkWidget *focus = gtk_root_get_focus (GTK_ROOT (f.window));
+    g_assert_nonnull (focus);
+    plain_key (GDK_KEY_space);
+    gint64 deadline = g_get_monotonic_time () + 5 * G_TIME_SPAN_SECOND;
+    while (find_text (f.window, "Preview unavailable. Check that Sushi is installed and running.", FALSE) == NULL)
+    {
+        g_assert_cmpint (g_get_monotonic_time (), <, deadline); pump (10);
+    }
+    g_assert_false (nautilus_previewer_is_visible ());
+    g_assert_true (gtk_root_get_focus (GTK_ROOT (f.window)) == focus);
+    assert_owner (&f, view, f.child);
+    teardown (&f, NULL);
+}
+
+static void
 test_toggle_keys (Fixture *f, gconstpointer unused)
 {
     if (!input) { g_test_skip ("Requires owned private compositor input"); return; }
@@ -498,6 +900,7 @@ main (int argc, char **argv)
     {
         g_autoptr (GError) error = NULL; input = miller_test_input_new (&error); g_assert_no_error (error);
     }
+    if (g_getenv ("MILLER_TEST_OWN_SUSHI")) { start_owned_sushi (); }
     nautilus_register_resource (); nautilus_global_preferences_init (); nautilus_ensure_extension_points ();
     g_autoptr (NautilusTagManager) tags = nautilus_tag_manager_new_dummy ();
     test_init_config_dir ();
@@ -515,5 +918,16 @@ main (int argc, char **argv)
     g_test_add ("/miller/preview-ui/inactive-tab-close", Fixture, GINT_TO_POINTER (1), setup, test_tabs, teardown);
     CASE ("width-independent", test_width); CASE ("drag-width", test_drag_width); CASE ("toggle-keys", test_toggle_keys);
     g_test_add_func ("/miller/preview-ui/process-state", test_process);
-    int result = g_test_run (); miller_test_input_free (input); return result;
+    g_test_add_func ("/miller/quicklook/actual-basic", test_quicklook_basic);
+    g_test_add_func ("/miller/quicklook/missing-provider", test_quicklook_missing);
+    g_test_add_data_func ("/miller/quicklook/tab-switch", NULL, test_quicklook_owner);
+    g_test_add_data_func ("/miller/quicklook/tab-close", GINT_TO_POINTER (1), test_quicklook_owner);
+    g_test_add_data_func ("/miller/quicklook/restart", NULL, test_quicklook_restart);
+    g_test_add_data_func ("/miller/quicklook/restart-latest-selection", GINT_TO_POINTER (1), test_quicklook_restart);
+    g_test_add_data_func ("/miller/quicklook/pending-entry", NULL, test_quicklook_pending_owner);
+    g_test_add_data_func ("/miller/quicklook/pending-tab-switch", GUINT_TO_POINTER (1), test_quicklook_pending_owner);
+    g_test_add_data_func ("/miller/quicklook/pending-tab-close", GUINT_TO_POINTER (2), test_quicklook_pending_owner);
+    g_test_add_data_func ("/miller/quicklook/foreign-selection", NULL, test_quicklook_foreign_owner);
+    g_test_add_data_func ("/miller/quicklook/foreign-close", GINT_TO_POINTER (1), test_quicklook_foreign_owner);
+    int result = g_test_run (); stop_owned_sushi (); miller_test_input_free (input); return result;
 }
