@@ -1799,7 +1799,7 @@ static void
 pattern_select_response_select (AdwDialog *dialog,
                                 gpointer   user_data)
 {
-    NautilusFilesView *self = g_object_get_data (G_OBJECT (dialog), "view");
+    NautilusFilesView *self = g_object_get_data (G_OBJECT (dialog), "nautilus-dialog-source-view");
     GtkWidget *entry = g_object_get_data (G_OBJECT (dialog), "entry");
     const char *text = gtk_editable_get_text (GTK_EDITABLE (entry));
     g_autolist (NautilusFile) selection = NULL;
@@ -1840,7 +1840,10 @@ select_pattern (NautilusFilesView *view)
     select_button = GTK_WIDGET (gtk_builder_get_object (builder, "select_button"));
 
     g_object_set_data (G_OBJECT (dialog), "entry", entry);
-    g_object_set_data (G_OBJECT (dialog), "view", view);
+    /* The window hosts this dialog after its source column is discarded. */
+    g_object_set_data_full (G_OBJECT (dialog), "nautilus-dialog-source-view",
+                            g_object_ref (view), g_object_unref);
+    file_view_dialog_watch_close (ADW_DIALOG (dialog), view);
     g_signal_connect_swapped (select_button, "clicked",
                               G_CALLBACK (pattern_select_response_select),
                               dialog);
@@ -1863,6 +1866,11 @@ typedef struct
     NautilusFilesView *directory_view;
     GHashTable *added_locations;
     NautilusFileList *selection;
+    /* Selection-based creation must finish its native create/move chain
+     * even after the dialog releases a discarded source column. */
+    NautilusFilesView *operation_view;
+    AdwDialog *dialog; /* Borrowed while the dialog owns this data. */
+    char *parent_uri;
 } NewFolderData;
 
 static void
@@ -1870,7 +1878,9 @@ clear_new_folder_data (NewFolderData *data)
 {
     g_hash_table_destroy (data->added_locations);
     g_clear_weak_pointer (&data->directory_view);
+    g_clear_object (&data->operation_view);
     nautilus_file_list_free (data->selection);
+    g_free (data->parent_uri);
     g_free (data);
 }
 
@@ -1973,13 +1983,14 @@ new_folder_data_new (NautilusFilesView *directory_view,
 {
     NewFolderData *data;
 
-    data = g_new (NewFolderData, 1);
+    data = g_new0 (NewFolderData, 1);
     data->directory_view = directory_view;
     data->added_locations = g_hash_table_new_full (g_file_hash, (GEqualFunc) g_file_equal,
                                                    g_object_unref, NULL);
     if (with_selection)
     {
         data->selection = nautilus_files_view_get_selection_for_file_transfer (directory_view);
+        data->operation_view = g_object_ref (directory_view);
     }
     else
     {
@@ -2065,9 +2076,11 @@ create_new_folder_callback (const char *folder_name,
     g_autofree gchar *parent_uri = NULL;
     NautilusFile *parent;
 
-    view = NAUTILUS_FILES_VIEW (user_data);
-
-    data = new_folder_data_new (view, with_selection);
+    data = user_data;
+    view = data->directory_view;
+    /* Transfer the initiating snapshot from the dialog to the native job. */
+    g_object_steal_data (G_OBJECT (data->dialog), "nautilus-new-folder-data");
+    data->dialog = NULL;
 
     g_signal_connect_data (view,
                            "add-files",
@@ -2076,7 +2089,8 @@ create_new_folder_callback (const char *folder_name,
                            (GClosureNotify) NULL,
                            G_CONNECT_AFTER);
 
-    parent_uri = nautilus_files_view_get_backing_uri (view);
+    parent_uri = with_selection ? g_strdup (data->parent_uri)
+                                : nautilus_files_view_get_backing_uri (view);
     parent = nautilus_file_get_by_uri (parent_uri);
     nautilus_file_operations_new_folder (GTK_WIDGET (view),
                                          NULL,
@@ -2101,11 +2115,21 @@ file_view_dialog_closed (AdwDialog            *dialog,
 {
     NautilusFilesView *view = g_object_get_data (G_OBJECT (dialog), "nautilus-dialog-source-view");
 
-    if (!view->active && gtk_widget_get_mapped (GTK_WIDGET (window)) &&
+    GtkWidget *focus = gtk_root_get_focus (GTK_ROOT (window));
+    GtkWidget *focused_view = focus != NULL
+                              ? gtk_widget_get_ancestor (focus, NAUTILUS_TYPE_FILES_VIEW)
+                              : NULL;
+    gboolean valid_focus = focus != NULL && gtk_widget_get_mapped (focus) &&
+                           gtk_widget_is_sensitive (focus) &&
+                           gtk_widget_get_root (focus) == GTK_ROOT (window) &&
+                           gtk_widget_get_ancestor (focus, ADW_TYPE_DIALOG) == NULL &&
+                           (focused_view == NULL || NAUTILUS_FILES_VIEW (focused_view)->active);
+
+    if (!view->active && !valid_focus && gtk_widget_get_mapped (GTK_WIDGET (window)) &&
         adw_application_window_get_visible_dialog (ADW_APPLICATION_WINDOW (window)) == NULL)
     {
-        /* GTK cannot restore focus into an inactive source column. The
-         * window already knows how to focus its current slot/search/view. */
+        /* Repair obsolete source-list focus through the existing slot path.
+         * Keep a valid control restored by GTK or focused by a newer action. */
         gtk_widget_grab_focus (GTK_WIDGET (window));
     }
 }
@@ -2140,12 +2164,17 @@ nautilus_files_view_new_folder_dialog_new (NautilusFilesView *view,
         common_prefix = nautilus_get_common_filename_prefix (selection, MIN_COMMON_FILENAME_PREFIX_LENGTH);
     }
 
+    NewFolderData *data = new_folder_data_new (view, with_selection);
+    data->parent_uri = g_strdup (uri);
     NautilusNewFolderDialog *dialog = nautilus_new_folder_dialog_new (GTK_WIDGET (view),
                                                                      containing_directory,
                                                                      with_selection,
                                                                      common_prefix,
                                                                      create_new_folder_callback,
-                                                                     view);
+                                                                     data);
+    data->dialog = ADW_DIALOG (dialog);
+    g_object_set_data_full (G_OBJECT (dialog), "nautilus-new-folder-data", data,
+                            (GDestroyNotify) clear_new_folder_data);
     /* The dialog is hosted by the window and may outlive this column. Its
      * callback still needs the originating view after a branch replacement. */
     g_object_set_data_full (G_OBJECT (dialog), "nautilus-dialog-source-view",

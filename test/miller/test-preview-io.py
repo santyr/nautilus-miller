@@ -72,6 +72,12 @@ raise SystemExit(result.returncode)
         result, trace = self.trace(['-f', '-qq', '-yy', '-s', '0', '-e', 'trace=openat,read,close',
             str(BINARY), '-p', '/miller/preview/text-bounds'])
         self.assertIn('ok 1 /miller/preview/text-bounds', result.stdout)
+        handles = self.observe_native_reads(trace)
+        self.assertEqual(len(handles), 2, f'Expected two preview opens: {handles}')
+        self.assertEqual([item['bytes'] for item in handles], [128 * 1024, 128 * 1024])
+        print(f'Observed native preview reads: {handles}', flush=True)
+
+    def observe_native_reads(self, trace):
         # Threads share descriptors. Match annotated fixture paths, not arbitrary
         # descriptor numbers or unrelated subprocess/system-file reads.
         handles, current, pending = [], {}, {}
@@ -79,7 +85,7 @@ raise SystemExit(result.returncode)
             prefix = re.match(r'(?:\[pid\s+(\d+)\]|(\d+))\s+(.*)', line)
             pid, call = ((prefix.group(1) or prefix.group(2)), prefix.group(3)) if prefix else ('main', line)
             if '<unfinished ...>' in call:
-                pending[pid] = call.split('<unfinished ...>')[0]
+                pending[pid] = call.split('<unfinished ...>')[0].rstrip()
                 continue
             resumed = re.match(r'<\.\.\. (\w+) resumed>(.*)', call)
             if resumed:
@@ -103,9 +109,18 @@ raise SystemExit(result.returncode)
             if closed:
                 current.pop(closed.group(1), None)
         self.assertFalse(current, 'Preview left a fixture descriptor open')
-        self.assertEqual(len(handles), 2, f'Expected two preview opens: {handles}')
-        self.assertEqual([item['bytes'] for item in handles], [128 * 1024, 128 * 1024])
-        print(f'Observed native preview reads: {handles}', flush=True)
+        return handles
+
+    def test_native_trace_reassembles_split_read(self):
+        # Real strace can defer the comma after an annotated descriptor to
+        # the resumed fragment. Whitespace at that join must not hide a read.
+        trace = """7 openat(AT_FDCWD, "/owned/first.txt", O_RDONLY|O_NONBLOCK|O_NOFOLLOW) = 22</owned/first.txt>
+7 read(22</owned/first.txt> <unfinished ...>
+8 read(3<pipe:[1]>, "", 8) = 8
+7 <... read resumed>, ""..., 4096) = 4096
+7 close(22</owned/first.txt>) = 0
+"""
+        self.assertEqual(self.observe_native_reads(trace), [{'bytes': 4096, 'reads': 1}])
 
     @unittest.skipUnless(shutil.which('strace'), 'Requires strace for actual provider observations')
     def test_image_provider_runs_with_native_sandbox(self):

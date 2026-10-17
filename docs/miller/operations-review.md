@@ -1,6 +1,6 @@
 # Operations component review record
 
-**Draft: final review not started.** The Task4 source-frozen two-profile gate passed both39/54/53/10/4/89; no whole-component completion is claimed. Source base for the whole component: `cd3c2a20049f88435f2586df2da0f23d98d5c6d9`; Task4 base: `cf9a6ffc90f92b34d054bcb915f0c72d66c8437a`.
+**Operations component reviewed and corrected.** The final source-frozen gate passed both39 Meson executables and63 operations per profile, inspector53/navigation10/delayed4/Python90. This closes this component, not Stage4 or the full release goal. The original pre-review Task4 gate passed both39/54/53/10/4/89. Source base for the whole component: `cd3c2a20049f88435f2586df2da0f23d98d5c6d9`; Task4 base: `cf9a6ffc90f92b34d054bcb915f0c72d66c8437a`.
 
 The [component plan](../superpowers/plans/2026-10-17-miller-operations.md), [full goal](finder-completion-goal.md), [evidence boundaries](operations-verification.md) and [acceptance ledger](acceptance.md) remain authoritative. DnD, extensions/OpenPGP, actual remotes, accessibility/resource measurements, CI and disposable release transactions are not closed by this component.
 
@@ -46,4 +46,54 @@ The [component plan](../superpowers/plans/2026-10-17-miller-operations.md), [ful
 
 ## Final review and correction
 
-Pending fresh read-only reviewer after the now-passing Task4 gate and implementation commit. No final findings, severity rulings or deferred minors have been established yet.
+One fresh read-only reviewer inspected immutable `cd3c2a200..db573187a`, all production changes, the complete fixture, requirements, chronological rulings and unchanged integration boundaries. Its strict evidence verifier passed; it did not independently rerun application tests. No Critical finding was established. No second review is planned.
+
+### Severity decisions and correction scope
+
+- **I1 Important:** shared `file_view_dialog_closed` overrides valid restored/new control focus whenever its source is inactive. Reproduce entry restoration across native AdwDialog close, then repair only obsolete focus.
+- **I2 Important:** New Folder with Selection captures selection at Accept, and its weak completion observer can disappear before native create/move chaining. Snapshot at initiation and prove delayed/pruned completion or truthful cancellation with exact files.
+- **I3 Important coverage gap:** no existing Cancel case proves a member completed before a later batch conflict/error. Add actual native partial-result cancellation; no operation-engine change without a reproduced defect.
+- **I4 Important coverage gap:** current source-pruned cases navigate away before the real rename. Add monitor-triggered pruning while the source branch remains displayed; preserve the older navigation-driven cases and describe them accurately.
+- **I5 Important, unchanged boundary:** Select Items matching-pattern dialog holds a borrowed FilesView. Reproduce source pruning while open, then retain captured context or cancel safely; never retarget a new listing.
+- **Final: minor (deferred): M1** Console test assumes no system Console provider. Installed Console can fail absence assertions or reveal its service after fixture removal. Isolate service discovery in later fixture portability work; no product bug is established.
+
+### Final rulings for every declined item
+
+- Final: Ruling: Actual drag-and-drop, spring-loading, external drags and scrolling — remain mandatory in the next Stage4 plan; clipboard success does not establish drag behavior — cost if wrong: release would otherwise miss wrong-pointer destinations or temporary-branch defects.
+- Final: Ruling: Installed extensions and OpenPGP — remain mandatory Stage4 workflows with private files/keys; native architecture is insufficient — cost if wrong: provider-specific targeting or crypto integration defects could remain.
+- Final: Ruling: Real SFTP/SMB authentication, reconnect and backend NOT_SUPPORTED Trash — remain mandatory Stage5; local permission failures cover only their stated backend — cost if wrong: remote cancellation or destructive fallback could remain undetected.
+- Final: Ruling: Default portal-backed Copy/Move/Extract workflows — remain explicit release acceptance; the in-process native GTK chooser cases and separate portal smoke prove different boundaries — cost if wrong: portal response/focus integration might differ.
+- Final: Ruling: Real Console window — remains acceptance with an actual installed provider; the private receiver proves only contract/destination/availability — cost if wrong: a real terminal could present or start incorrectly.
+- Final: Ruling: Arbitrary external apps, executable desktop fallback and other clipboard formats — remain interoperability acceptance; current receipts prove only GApplication D-Bus Open and public URI transfer — cost if wrong: other launch or serialization routes could regress.
+- Final: Ruling: Pending clipboard reply after tab destruction — requires an additional retained-provider lifecycle case; switching tabs does not prove owner destruction — cost if wrong: a cancellation/lifetime defect could remain.
+- Final: Ruling: Ordinary toolbar progress popover accessibility/reachability — remains mandatory UI acceptance; the extra host only proves the existing cancel widget and native worker — cost if wrong: ordinary users might not reach Cancel.
+- Final: Ruling: Batch rename layout with inherited GtkSizeGroup warnings — remains Stage5 visual/C16 comparison; source identity and successful rename do not prove presentation — cost if wrong: inherited warning could mask unusable controls.
+- Final: Ruling: Broad screen-reader, RTL, scaling, contrast and resource performance — remain mandatory later real UI and comparative measurement work — cost if wrong: operation bytes alone could conceal inaccessible or unresponsive behavior.
+- Final: Ruling: Bookmarks/volumes, special locations and previous components — retain previous reviewed evidence and remaining full-goal gates; inspect intersections here without claiming full re-review — cost if wrong: cross-component defects require final release acceptance.
+- Final: Ruling: Fresh whole-upstream application comparison — remains C16; source identity and Grid/List controls support only their narrower claims — cost if wrong: an inherited-versus-fork classification could be wrong.
+- Final: Ruling: Host-network isolation — must be integrated and tested before real remote fixtures; existing sessions are not claimed network isolated — cost if wrong: native discovery may contact host interfaces.
+- Final: Ruling: Observed CI, real RPM transactions and installed manager — remain mandatory Stage6; no deployment or shared push is authorized by component closure — cost if wrong: unexercised release ordering/routing/recovery could fail.
+
+- Final: Ruling: I3/I4 are missing transition evidence, not observed product defects — characterize native behavior and require a real RED before any production correction; do not invent a failing expectation for existing correct behavior — cost if wrong: inadequate tests could conceal the transition, so assert completed-before-cancel and monitor-driven detachment directly.
+
+### Correction evidence and final aggregate
+
+| Finding | Maintained cases and result | Production scope |
+|---|---|---|
+| I1 | dialog-close-preserves-entry RED→GREEN, plus7 dialog controls PASS | Shared native close handler preserves valid mapped control focus. |
+| I2 | new-folder-captured-selection and -pruned RED→GREEN; -pruned-cancel PASS | Existing NewFolderData captures on dialog open; selection-only job reference spans create/move dispatch. |
+| I3 | partial-result-cancel PASS with first exact bytes asserted before later conflict | Native operation unchanged; actual partial-result cancellation now covered. |
+| I4 | monitor-dialog-source-pruned Accept/error Cancel and direct -cancel PASS | Native operation unchanged; actual monitor fallback/detachment now covered. |
+| I5 | pattern-source-pruned SIGSEGV→PASS and -cancel PASS with final weak release | Original matching dialog owns its source, reuses existing close helper. |
+
+Failed fixture assumptions, exact logs and transition boundaries are retained in [operations verification](operations-verification.md). The first63-case two-profile aggregate passed both39/63 and actual53/10/4, but failed one Python read-observer test. A captured split-syscall parser defect now has RED→GREEN evidence and actual I/O7/7. The subsequent fresh complete63-case/Python90 gate passed with source fingerprint `486e993a55867ae85c1c767862cb40b33733f0bbdd11babb82299f0fe168db24`; strict verification recomputed the current source fingerprint and checked every review case, native child marker and external no-skip result. Full release readiness remains unproved.
+
+## Component outcome
+
+- Final: fixed I1 — dialog-close-preserves-entry RED→GREEN; final operations63/63 in both full Meson39/39 profiles, plus actual inspector53/navigation10/delayed4/Python90.
+- Final: fixed I2 — original selection replacement and discarded-source empty-folder regressions RED→GREEN; native Cancel proves owner release; same final green gate.
+- Final: fixed I3 coverage — completed-before-conflict bytes and subsequent native batch Cancel directly pass; no native operation policy change; same final green gate.
+- Final: fixed I4 coverage — real monitor-triggered source removal and native fallback while chooser stays open, Accept/native error Cancel and direct Cancel pass; same final green gate.
+- Final: fixed I5 — matching-pattern dangling source SIGSEGV→GREEN; Accept/Cancel weak release and current-context guards pass; same final green gate.
+
+The read-observer parser additionally has a deterministic RED→GREEN regression and unchanged raw failing-trace replay; original failure remains recorded. Full logs: `/tmp/nautilus-finder-operations-review-final.log`, driver `...-review-driver.log`, detailed `...-review-final-{build-miller,build-preview-canonical}-testlog.txt`. Python90 passed in191.306s. One review and one correction pass; no second reviewer. M1 Console fixture portability remains deferred. All chronological and declined-item rulings above remain binding with their costs. Drag workflows, extensions/OpenPGP, real remote/backend, accessibility/performance, observed CI and release transactions remain mandatory.

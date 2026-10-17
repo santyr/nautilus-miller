@@ -50,6 +50,7 @@ typedef struct
 static void test_native_multi_rename (OperationFixture *f, gconstpointer unused);
 static void operations_stop_receiver (OperationFixture *f);
 static void operations_prepare_templates (void);
+static void operations_press_button (GtkWidget *dialog, const char *label);
 
 static MillerTestInput *input;
 static const char payload[] = "Native clipboard payload: 雪\n";
@@ -1136,6 +1137,93 @@ test_operation_tab_switch (OperationFixture *f, gconstpointer unused)
     else { operations_assert_focus (f, other); }
 }
 
+/* Genuine monitor pruning: keep the source displayed until external GIO
+ * removal makes the native slot fall back. No navigation API prunes it. */
+static void
+test_monitor_dialog_source_pruned (OperationFixture *f, gconstpointer unused)
+{
+    gboolean cancel = g_str_has_suffix (g_test_get_path (), "-cancel");
+    g_autoptr (GFile) preserved_dir = g_file_get_child (f->root, "preserved");
+    g_autofree char *name = g_file_get_basename (f->source_file);
+    g_autoptr (GFile) preserved_file = g_file_get_child (preserved_dir, name);
+    operations_owned (f, preserved_dir); operations_owned (f, preserved_file);
+    g_assert_true (g_file_make_directory (preserved_dir, NULL, NULL));
+    NautilusFilesView *source = operations_view_for_directory (f, f->source_dir);
+    operations_select (f, source, f->source_file); operations_assert_focus (f, source);
+    operations_key (GDK_KEY_Menu); operations_activate_menu_label (source, "Copy to…");
+    g_autoptr (GtkWidget) chooser = operations_wait_window (f, GTK_TYPE_FILE_CHOOSER_DIALOG);
+    GWeakRef weak; g_weak_ref_init (&weak, source);
+    g_assert_true (gtk_widget_get_root (GTK_WIDGET (source)) == GTK_ROOT (f->window));
+    g_assert_true (g_file_equal (nautilus_window_slot_get_location (f->slot), f->source_dir));
+    operations_owned (f, f->source_file); operations_owned (f, f->source_dir);
+    g_assert_true (g_file_move (f->source_file, preserved_file, G_FILE_COPY_NONE, NULL, NULL, NULL, NULL));
+    g_assert_true (g_file_delete (f->source_dir, NULL, NULL));
+    gint64 deadline = g_get_monotonic_time () + 10 * G_TIME_SPAN_SECOND;
+    for (;;)
+    {
+        g_autoptr (GtkWidget) retained = g_weak_ref_get (&weak);
+        g_assert_nonnull (retained);
+        if (gtk_widget_get_root (retained) == NULL &&
+            g_file_equal (nautilus_window_slot_get_location (f->slot), f->root) &&
+            !nautilus_window_slot_get_loading (f->slot)) { break; }
+        g_assert_cmpint (g_get_monotonic_time (), <, deadline); operations_pump (10);
+    }
+    g_test_message ("Native monitor pruned displayed source and selected existing parent while chooser stayed open");
+    guint history = g_list_length (nautilus_window_slot_get_back_history (f->slot));
+    g_autoptr (GFile) copied = g_file_get_child (f->parent, name);
+    gboolean error_shown = FALSE;
+    if (cancel) { operations_key (GDK_KEY_Escape); }
+    else
+    {
+        operations_accept_folder (chooser, f->parent);
+        for (;;)
+        {
+            gboolean finished = f->jobs->len > 0;
+            for (guint i = 0; i < f->jobs->len; i++)
+            {
+                finished &= nautilus_progress_info_get_is_finished (f->jobs->pdata[i]);
+            }
+            if (finished) { break; }
+            GListModel *windows = gtk_window_get_toplevels ();
+            for (guint i = 0; i < g_list_model_get_n_items (windows); i++)
+            {
+                g_autoptr (GtkWidget) window = g_list_model_get_item (windows, i);
+                GtkWidget *alert = operations_find_type (window, ADW_TYPE_ALERT_DIALOG);
+                if (alert != NULL && gtk_widget_get_mapped (alert))
+                {
+                    g_assert_false (error_shown); error_shown = TRUE;
+                    g_test_message ("Native operation truthfully reports removed source: %s",
+                                    adw_alert_dialog_get_heading (ADW_ALERT_DIALOG (alert)));
+                    operations_press_button (alert, "Cancel"); break;
+                }
+            }
+            g_assert_cmpint (g_get_monotonic_time (), <, deadline); operations_pump (10);
+        }
+        g_assert_cmpuint (f->jobs->len, ==, 1);
+    }
+    operations_settle (f);
+    if (cancel || error_shown) { g_assert_false (g_file_query_exists (copied, NULL)); }
+    else { operations_assert_bytes (f, copied, payload); }
+    operations_assert_bytes (f, preserved_file, payload); operations_assert_sentinels (f);
+    g_assert_false (g_file_query_exists (f->source_dir, NULL));
+    GFile *unrelated[] = { f->root, f->child, f->sibling };
+    for (guint i = 0; i < G_N_ELEMENTS (unrelated); i++)
+    {
+        g_autoptr (GFile) wrong = g_file_get_child (unrelated[i], name);
+        g_assert_false (g_file_query_exists (wrong, NULL));
+    }
+    for (;;)
+    {
+        g_autoptr (GtkWidget) retained = g_weak_ref_get (&weak);
+        if (retained == NULL) { break; }
+        g_assert_cmpint (g_get_monotonic_time (), <, deadline); operations_pump (10);
+    }
+    g_weak_ref_clear (&weak);
+    g_assert_cmpuint (g_list_length (nautilus_window_slot_get_back_history (f->slot)), ==, history);
+    g_assert_true (g_file_equal (nautilus_window_slot_get_location (f->slot), f->root));
+    operations_assert_focus (f, operations_view_for_directory (f, f->root));
+}
+
 static void
 test_new_folder_source_pruned (OperationFixture *f, gconstpointer unused)
 {
@@ -1226,6 +1314,202 @@ test_new_folder_after_tab_switch (OperationFixture *f, gconstpointer unused)
     g_autoptr (GFile) wrong = g_file_get_child (f->sibling, "created-folder");
     g_assert_false (g_file_query_exists (wrong, NULL));
     operations_assert_focus (f, operations_view_for_directory (f, f->sibling));
+}
+
+/* Model another native window callback restoring an editor during dialog
+ * closure. Setup is controlled; closure itself uses genuine Escape. */
+static void
+operations_restore_location_entry (AdwDialog *dialog, OperationFixture *f)
+{
+    GtkWidget *toolbar = operations_find_type (f->window, NAUTILUS_TYPE_TOOLBAR);
+    g_assert_true (gtk_widget_activate_action (toolbar, "toolbar.edit-location", NULL));
+    GtkWidget *entry = operations_find_type (toolbar, NAUTILUS_TYPE_LOCATION_ENTRY);
+    GtkWidget *focus = gtk_root_get_focus (GTK_ROOT (f->window));
+    g_assert_nonnull (entry);
+    g_assert_true (focus == entry || gtk_widget_is_ancestor (focus, entry));
+    g_test_message ("Native close callback restored a valid location entry before after-handlers");
+}
+
+static void
+test_dialog_close_preserves_entry (OperationFixture *f, gconstpointer unused)
+{
+    NautilusFilesView *source = operations_view_for_directory (f, f->source_dir);
+    operations_select (f, source, f->source_file);
+    operations_chord (GDK_KEY_l, FALSE);
+    GtkWidget *toolbar = operations_find_type (f->window, NAUTILUS_TYPE_TOOLBAR);
+    GtkWidget *entry = operations_find_type (toolbar, NAUTILUS_TYPE_LOCATION_ENTRY);
+    g_assert_nonnull (entry);
+    GtkWidget *focus = gtk_root_get_focus (GTK_ROOT (f->window));
+    g_assert_true (focus == entry || gtk_widget_is_ancestor (focus, entry));
+    operations_chord (GDK_KEY_n, TRUE);
+    AdwDialog *dialog = adw_application_window_get_visible_dialog (ADW_APPLICATION_WINDOW (f->window));
+    g_assert_nonnull (dialog);
+    operations_new_tab_at (f, f->sibling);
+    guint history = g_list_length (nautilus_window_slot_get_back_history (f->slot));
+    g_signal_connect (dialog, "closed", G_CALLBACK (operations_restore_location_entry), f);
+    operations_key (GDK_KEY_Escape);
+    gint64 deadline = g_get_monotonic_time () + 8 * G_TIME_SPAN_SECOND;
+    while (adw_application_window_get_visible_dialog (ADW_APPLICATION_WINDOW (f->window)) != NULL)
+    {
+        g_assert_cmpint (g_get_monotonic_time (), <, deadline); operations_pump (10);
+    }
+    operations_pump (250);
+    focus = gtk_root_get_focus (GTK_ROOT (f->window));
+    g_test_message ("Native dialog close restored focus=%s expected location entry", focus ? G_OBJECT_TYPE_NAME (focus) : "none");
+    g_assert_nonnull (focus);
+    g_assert_true (focus == entry || gtk_widget_is_ancestor (focus, entry));
+    g_assert_cmpuint (g_list_length (nautilus_window_slot_get_back_history (f->slot)), ==, history);
+    g_assert_cmpuint (f->jobs->len, ==, 0);
+    operations_assert_bytes (f, f->source_file, payload); operations_assert_sentinels (f);
+    g_assert_true (g_file_equal (nautilus_window_slot_get_location (f->slot), f->sibling));
+}
+
+/* Catch a window-hosted matching dialog dereferencing a destroyed source,
+ * or applying its result to the replacement listing instead of its source. */
+static void
+test_pattern_source_pruned (OperationFixture *f, gconstpointer unused)
+{
+    gboolean cancel = g_str_has_suffix (g_test_get_path (), "-cancel");
+    NautilusFilesView *source = operations_view_for_directory (f, f->source_dir);
+    operations_select (f, source, f->source_file);
+    nautilus_files_view_set_selection (source, NULL, FALSE);
+    operations_chord (GDK_KEY_s, FALSE);
+    AdwDialog *dialog = adw_application_window_get_visible_dialog (ADW_APPLICATION_WINDOW (f->window));
+    g_assert_nonnull (dialog);
+    GtkWidget *entry = operations_find_type (GTK_WIDGET (dialog), GTK_TYPE_ENTRY);
+    g_assert_nonnull (entry);
+    GWeakRef weak; g_weak_ref_init (&weak, source);
+    nautilus_window_open_location_full (NAUTILUS_WINDOW (f->window), f->sibling, 0, NULL);
+    operations_settle (f);
+    g_autoptr (GtkWidget) retained = g_weak_ref_get (&weak);
+    g_test_message ("Pattern dialog source after branch pruning retained=%d", retained != NULL);
+    guint history = g_list_length (nautilus_window_slot_get_back_history (f->slot));
+    if (cancel) { operations_key (GDK_KEY_Escape); }
+    else
+    {
+        gtk_editable_set_text (GTK_EDITABLE (entry), "*.txt");
+        operations_press_button (GTK_WIDGET (dialog), "Select");
+        g_assert_nonnull (retained);
+        g_autolist (NautilusFile) selected = nautilus_files_view_get_selection (NAUTILUS_FILES_VIEW (retained));
+        g_assert_cmpuint (g_list_length (selected), ==, 1);
+        g_autoptr (GFile) chosen = nautilus_file_get_location (selected->data);
+        g_assert_true (g_file_equal (chosen, f->source_file));
+    }
+    operations_pump (300);
+    NautilusFilesView *current = operations_view_for_directory (f, f->sibling);
+    g_autolist (NautilusFile) current_selection = nautilus_files_view_get_selection (current);
+    g_assert_null (current_selection);
+    g_clear_object (&retained);
+    gint64 deadline = g_get_monotonic_time () + 8 * G_TIME_SPAN_SECOND;
+    for (;;)
+    {
+        g_autoptr (GtkWidget) old = g_weak_ref_get (&weak);
+        if (old == NULL) { break; }
+        g_assert_cmpint (g_get_monotonic_time (), <, deadline); operations_pump (10);
+    }
+    g_weak_ref_clear (&weak);
+    g_assert_cmpuint (g_list_length (nautilus_window_slot_get_back_history (f->slot)), ==, history);
+    g_assert_cmpuint (f->jobs->len, ==, 0);
+    operations_assert_bytes (f, f->source_file, payload); operations_assert_sentinels (f);
+    operations_assert_focus (f, current);
+}
+
+/* New Folder with Selection must move the files selected when its dialog
+ * opened, even if another model selection supersedes them before Accept. */
+static void
+test_new_folder_captured_selection (OperationFixture *f, gconstpointer unused)
+{
+    gboolean pruned = strstr (g_test_get_path (), "-pruned") != NULL;
+    gboolean cancel = g_str_has_suffix (g_test_get_path (), "-cancel");
+    gboolean animations;
+    g_object_get (gtk_settings_get_default (), "gtk-enable-animations", &animations, NULL);
+    if (pruned) { g_object_set (gtk_settings_get_default (), "gtk-enable-animations", FALSE, NULL); }
+    g_autoptr (GFile) second = g_file_get_child (f->source_dir, "second.txt");
+    g_autoptr (GFile) replacement = g_file_get_child (f->source_dir, "replacement.txt");
+    operations_owned (f, second); operations_owned (f, replacement);
+    g_assert_true (g_file_replace_contents (second, "second member", 13, NULL, FALSE, 0, NULL, NULL, NULL));
+    g_assert_true (g_file_replace_contents (replacement, "not selected", 12, NULL, FALSE, 0, NULL, NULL, NULL));
+    NautilusFilesView *source = operations_view_for_directory (f, f->source_dir);
+    operations_select (f, source, second);
+    g_autoptr (NautilusFile) first_file = nautilus_file_get (f->source_file);
+    g_autoptr (NautilusFile) second_file = nautilus_file_get (second);
+    g_autoptr (NautilusFile) replacement_file = nautilus_file_get (replacement);
+    GList tail = { .data = second_file }; GList head = { .data = first_file, .next = &tail }; tail.prev = &head;
+    nautilus_files_view_set_selection (source, &head, FALSE); operations_settle (f);
+    operations_key (GDK_KEY_Menu);
+    operations_activate_menu_label (source, "New Folder with Selection (2 Items)");
+    AdwDialog *dialog = adw_application_window_get_visible_dialog (ADW_APPLICATION_WINDOW (f->window));
+    g_assert_nonnull (dialog);
+    GtkWidget *entry = operations_find_type (GTK_WIDGET (dialog), ADW_TYPE_ENTRY_ROW);
+    g_assert_nonnull (entry);
+    GWeakRef weak, dialog_weak; g_weak_ref_init (&weak, source); g_weak_ref_init (&dialog_weak, dialog);
+    if (pruned)
+    {
+        nautilus_window_open_location_full (NAUTILUS_WINDOW (f->window), f->sibling, 0, NULL);
+        operations_settle (f);
+    }
+    else
+    {
+        GList changed = { .data = replacement_file };
+        nautilus_files_view_set_selection (source, &changed, FALSE);
+    }
+    guint history = g_list_length (nautilus_window_slot_get_back_history (f->slot));
+    if (cancel) { operations_key (GDK_KEY_Escape); }
+    else
+    {
+        gtk_widget_grab_focus (entry); operations_chord (GDK_KEY_a, FALSE);
+        operations_type ("grouped"); operations_key (GDK_KEY_Return);
+    }
+    g_autoptr (GFile) folder = g_file_get_child (f->source_dir, "grouped");
+    gint64 deadline = g_get_monotonic_time () + 10 * G_TIME_SPAN_SECOND;
+    while (!cancel && !g_file_query_exists (folder, NULL))
+    {
+        g_assert_cmpint (g_get_monotonic_time (), <, deadline); operations_pump (10);
+    }
+    operations_settle (f);
+    g_autofree char *name = g_file_get_basename (f->source_file);
+    g_autoptr (GFile) moved_first = g_file_get_child (folder, name);
+    g_autoptr (GFile) moved_second = g_file_get_child (folder, "second.txt");
+    g_autoptr (GFile) wrong = g_file_get_child (folder, "replacement.txt");
+    if (cancel)
+    {
+        g_assert_false (g_file_query_exists (folder, NULL));
+        g_assert_cmpuint (f->jobs->len, ==, 0);
+        operations_assert_bytes (f, f->source_file, payload);
+        operations_assert_bytes (f, second, "second member");
+        operations_assert_bytes (f, replacement, "not selected");
+    }
+    else
+    {
+        g_test_message ("Captured folder result: first=%d second=%d replacement=%d pruned=%d",
+                        g_file_query_exists (moved_first, NULL), g_file_query_exists (moved_second, NULL),
+                        g_file_query_exists (wrong, NULL), pruned);
+        operations_assert_bytes (f, moved_first, payload);
+        operations_assert_bytes (f, moved_second, "second member");
+        operations_assert_bytes (f, replacement, "not selected");
+        g_assert_false (g_file_query_exists (f->source_file, NULL));
+        g_assert_false (g_file_query_exists (second, NULL));
+        g_assert_false (g_file_query_exists (wrong, NULL));
+    }
+    g_autoptr (GFile) wrong_sibling = g_file_get_child (f->sibling, "grouped");
+    g_autoptr (GFile) wrong_child = g_file_get_child (f->child, "grouped");
+    g_assert_false (g_file_query_exists (wrong_sibling, NULL));
+    g_assert_false (g_file_query_exists (wrong_child, NULL));
+    operations_assert_sentinels (f);
+    operations_assert_focus (f, pruned ? operations_view_for_directory (f, f->sibling) : source);
+    g_assert_cmpuint (g_list_length (nautilus_window_slot_get_back_history (f->slot)), ==, history);
+    if (pruned)
+    {
+        for (;;)
+        {
+            g_autoptr (GtkWidget) retained = g_weak_ref_get (&weak);
+            g_autoptr (AdwDialog) retained_dialog = g_weak_ref_get (&dialog_weak);
+            if (retained == NULL && retained_dialog == NULL) { break; }
+            g_assert_cmpint (g_get_monotonic_time (), <, deadline); operations_pump (10);
+        }
+    }
+    g_weak_ref_clear (&weak); g_weak_ref_clear (&dialog_weak);
+    g_object_set (gtk_settings_get_default (), "gtk-enable-animations", animations, NULL);
 }
 
 /* These acceptance cases catch wrong-destination routing or bypassing native
@@ -1399,6 +1683,68 @@ test_native_permission_error (OperationFixture *f, gconstpointer unused)
     }
     operations_assert_sentinels (f);
     operations_assert_focus (f, parent);
+}
+
+/* A single native batch must preserve a demonstrably completed member
+ * when the user cancels its later conflict. No atomic-batch assumption. */
+static void
+test_partial_result_cancel (OperationFixture *f, gconstpointer unused)
+{
+    const char *names[] = { "a-completed.txt", "b-conflict.txt", "c-unstarted.txt" };
+    const char *bytes[] = { "completed bytes", "incoming conflict", "unstarted bytes" };
+    g_autoptr (GPtrArray) sources = g_ptr_array_new_with_free_func (g_object_unref);
+    g_autoptr (GPtrArray) targets = g_ptr_array_new_with_free_func (g_object_unref);
+    g_autoptr (GPtrArray) files = g_ptr_array_new_with_free_func (g_object_unref);
+    GList *selection = NULL;
+    for (guint i = 0; i < G_N_ELEMENTS (names); i++)
+    {
+        GFile *file = g_file_get_child (f->source_dir, names[i]); operations_owned (f, file);
+        g_assert_true (g_file_replace_contents (file, bytes[i], strlen (bytes[i]), NULL, FALSE, 0, NULL, NULL, NULL));
+        g_ptr_array_add (sources, file);
+        g_ptr_array_add (targets, g_file_get_child (f->parent, names[i]));
+        g_ptr_array_add (files, nautilus_file_get (file));
+        selection = g_list_append (selection, files->pdata[i]);
+    }
+    operations_owned (f, targets->pdata[1]);
+    g_assert_true (g_file_replace_contents (targets->pdata[1], "retained conflict", 17, NULL, FALSE, 0, NULL, NULL, NULL));
+    NautilusFilesView *source = operations_view_for_directory (f, f->source_dir);
+    operations_select (f, source, sources->pdata[2]);
+    nautilus_files_view_set_selection (source, selection, FALSE); g_list_free (selection);
+    operations_settle (f); operations_chord (GDK_KEY_c, FALSE);
+    NautilusFilesView *parent = operations_open_parent (f);
+    guint history = g_list_length (nautilus_window_slot_get_back_history (f->slot));
+    operations_chord (GDK_KEY_v, FALSE);
+    g_autoptr (GtkWidget) dialog = operations_wait_window (f, NAUTILUS_TYPE_FILE_CONFLICT_DIALOG);
+    g_assert_cmpuint (f->jobs->len, ==, 1);
+    NautilusProgressInfo *job = f->jobs->pdata[0];
+    g_assert_true (nautilus_progress_info_get_is_started (job));
+    g_assert_false (nautilus_progress_info_get_is_finished (job));
+    /* Establish completed bytes BEFORE allowing the later conflict to end. */
+    operations_assert_bytes (f, targets->pdata[0], "completed bytes");
+    operations_assert_bytes (f, targets->pdata[1], "retained conflict");
+    g_assert_false (g_file_query_exists (targets->pdata[2], NULL));
+    g_test_message ("Native batch completed first member before later conflict; cancel now");
+    operations_press_button (dialog, "Cancel"); operations_settle (f);
+    g_assert_true (nautilus_progress_info_get_is_finished (job));
+    g_assert_true (nautilus_progress_info_get_is_cancelled (job));
+    g_assert_cmpint (nautilus_file_conflict_dialog_get_response (NAUTILUS_FILE_CONFLICT_DIALOG (dialog)), ==, CONFLICT_RESPONSE_CANCEL);
+    operations_wait_file (f, parent, targets->pdata[0]);
+    operations_assert_bytes (f, targets->pdata[0], "completed bytes");
+    operations_assert_bytes (f, targets->pdata[1], "retained conflict");
+    g_assert_false (g_file_query_exists (targets->pdata[2], NULL));
+    for (guint i = 0; i < G_N_ELEMENTS (names); i++)
+    {
+        operations_assert_bytes (f, sources->pdata[i], bytes[i]);
+        g_autoptr (GFile) wrong_child = g_file_get_child (f->child, names[i]);
+        g_autoptr (GFile) wrong_sibling = g_file_get_child (f->sibling, names[i]);
+        g_assert_false (g_file_query_exists (wrong_child, NULL));
+        g_assert_false (g_file_query_exists (wrong_sibling, NULL));
+    }
+    g_autoptr (NautilusFile) absent = nautilus_file_get (targets->pdata[2]);
+    g_assert_null (nautilus_view_model_get_item_for_file (nautilus_files_view_get_private_model (parent), absent));
+    operations_assert_bytes (f, f->source_file, payload); operations_assert_sentinels (f);
+    operations_assert_focus (f, parent);
+    g_assert_cmpuint (g_list_length (nautilus_window_slot_get_back_history (f->slot)), ==, history);
 }
 
 static void
@@ -2358,10 +2704,18 @@ main (int argc, char **argv)
     COLUMN_CASE ("inactive-column-menu", test_inactive_column_menu);
     COLUMN_CASE ("dialog-source-pruned", test_dialog_source_pruned);
     COLUMN_CASE ("dialog-source-pruned-cancel", test_dialog_source_pruned);
+    COLUMN_CASE ("monitor-dialog-source-pruned", test_monitor_dialog_source_pruned);
+    COLUMN_CASE ("monitor-dialog-source-pruned-cancel", test_monitor_dialog_source_pruned);
     COLUMN_CASE ("operation-tab-switch", test_operation_tab_switch);
     COLUMN_CASE ("new-folder-source-pruned", test_new_folder_source_pruned);
     COLUMN_CASE ("new-folder-source-pruned-cancel", test_new_folder_source_pruned);
     COLUMN_CASE ("new-folder-after-tab-switch", test_new_folder_after_tab_switch);
+    COLUMN_CASE ("dialog-close-preserves-entry", test_dialog_close_preserves_entry);
+    COLUMN_CASE ("pattern-source-pruned", test_pattern_source_pruned);
+    COLUMN_CASE ("pattern-source-pruned-cancel", test_pattern_source_pruned);
+    COLUMN_CASE ("new-folder-captured-selection", test_new_folder_captured_selection);
+    COLUMN_CASE ("new-folder-captured-selection-pruned", test_new_folder_captured_selection);
+    COLUMN_CASE ("new-folder-captured-selection-pruned-cancel", test_new_folder_captured_selection);
     g_test_add ("/miller/operations/operation-tab-switch-list", OperationFixture,
         GUINT_TO_POINTER (NAUTILUS_VIEW_LIST_ID), operations_setup, test_operation_tab_switch, operations_teardown);
     g_test_add ("/miller/operations/operation-tab-switch-grid", OperationFixture,
@@ -2379,6 +2733,7 @@ main (int argc, char **argv)
     COLUMN_CASE ("permission-denied", test_native_permission_error);
     COLUMN_CASE ("partial-failure", test_native_permission_error);
     COLUMN_CASE ("progress-cancel", test_progress_cancel);
+    COLUMN_CASE ("partial-result-cancel", test_partial_result_cancel);
     COLUMN_CASE ("permanent-delete-confirmation", test_native_operation_child);
     COLUMN_CASE ("trash-undo-restore", test_native_operation_child);
     COLUMN_CASE ("trash-unavailable", test_native_operation_child);

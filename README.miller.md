@@ -31,6 +31,8 @@ The focused column owns ordinary file actions. Paste, New Folder, New Document a
 | Open / Open With | Enter / context menu |
 | Copy, Cut, Paste | Ctrl+C, Ctrl+X, Ctrl+V |
 | New Folder / New Document | Ctrl+Shift+N / background context menu |
+| New Folder with Selection | Selection context menu |
+| Select Items matching a pattern | Ctrl+S |
 | Rename one or several files | F2 |
 | Link from clipboard / link in place | Ctrl+M / Ctrl+Shift+M; link menu items are optional in Preferences |
 | Trash / permanent delete | Delete / Shift+Delete with native confirmation |
