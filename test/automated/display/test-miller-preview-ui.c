@@ -9,6 +9,8 @@
 #include "nautilus-global-preferences.h"
 #include "nautilus-miller-preview.h"
 #include "nautilus-miller-view.h"
+#include "nautilus-preferences-dialog.h"
+#include "nautilus-view-model.h"
 #include "nautilus-resources.h"
 #include "nautilus-tag-manager.h"
 #include "nautilus-window.h"
@@ -23,6 +25,7 @@ typedef struct
     GFile *root, *child, *other, *one;
 } Fixture;
 static MillerTestInput *input;
+static char persistent_setup_marker;
 
 static void
 pump (guint ms)
@@ -112,7 +115,7 @@ select_one (NautilusFilesView *view, GFile *location)
 static void
 setup (Fixture *f, gconstpointer persistence)
 {
-    if (persistence == NULL)
+    if (persistence != &persistent_setup_marker)
     {
         g_settings_reset (nautilus_preferences, "miller-preview-visible");
         g_settings_reset (nautilus_preferences, "miller-preview-width");
@@ -215,8 +218,11 @@ test_tabs (Fixture *f, gconstpointer unused)
     AdwTabView *tabs = ADW_TAB_VIEW (find_type (f->window, ADW_TYPE_TAB_VIEW));
     g_assert_cmpint (adw_tab_view_get_n_pages (tabs), ==, 2);
     gboolean loading; g_object_get (old, "loading", &loading, NULL); g_assert_false (loading);
-    adw_tab_view_set_selected_page (tabs, adw_tab_view_get_nth_page (tabs, 0)); settle (f);
-    assert_target (f, "one.txt");
+    if (unused == NULL)
+    {
+        adw_tab_view_set_selected_page (tabs, adw_tab_view_get_nth_page (tabs, 0)); settle (f);
+        assert_target (f, "one.txt");
+    }
     AdwTabPage *closing = adw_tab_view_get_nth_page (tabs, 0);
     g_clear_object (&f->slot);
     adw_tab_view_close_page (tabs, closing); pump (150);
@@ -298,6 +304,28 @@ test_toggle_keys (Fixture *f, gconstpointer unused)
 }
 
 static void
+test_background_close_entry_focus (Fixture *f, gconstpointer unused)
+{
+    if (!input) { g_test_skip ("Requires owned private compositor input"); return; }
+    toggle (f);
+    NautilusMillerPreview *old = preview (f);
+    g_object_add_weak_pointer (G_OBJECT (old), (gpointer *) &old);
+    AdwTabView *tabs = ADW_TAB_VIEW (find_type (f->window, ADW_TYPE_TAB_VIEW));
+    AdwTabPage *closing = adw_tab_view_get_selected_page (tabs);
+    nautilus_window_new_tab (NAUTILUS_WINDOW (f->window));
+    g_clear_object (&f->slot);
+    g_object_get (f->window, "active-slot", &f->slot, NULL); settle (f);
+    key_chord (GDK_KEY_l, FALSE); settle (f);
+    GtkWidget *entry = gtk_root_get_focus (GTK_ROOT (f->window));
+    g_assert_true (GTK_IS_EDITABLE (entry));
+    adw_tab_view_close_page (tabs, closing); settle (f);
+    g_assert_null (old);
+    g_assert_true (gtk_root_get_focus (GTK_ROOT (f->window)) == entry);
+    g_assert_true (nautilus_window_slot_get_current_view (f->slot) ==
+                   g_object_get_data (G_OBJECT (f->window), "nautilus-active-file-view"));
+}
+
+static void
 test_drag_width (Fixture *f, gconstpointer unused)
 {
     if (!input) { g_test_skip ("Requires owned private compositor input"); return; }
@@ -352,13 +380,95 @@ test_drag_width (Fixture *f, gconstpointer unused)
     }
 }
 
+typedef struct { Fixture *fixture; gboolean closed, create_tab; } DecodeClose;
+static void
+close_decoding_tab (GtkLabel *label, GParamSpec *pspec, DecodeClose *close)
+{
+    if (close->closed || !g_str_equal (gtk_label_get_text (label), "Decoding image preview…")) { return; }
+    close->closed = TRUE;
+    Fixture *f = close->fixture;
+    AdwTabView *tabs = ADW_TAB_VIEW (find_type (f->window, ADW_TYPE_TAB_VIEW));
+    AdwTabPage *old = adw_tab_view_get_selected_page (tabs);
+    if (close->create_tab) { nautilus_window_new_tab (NAUTILUS_WINDOW (f->window)); }
+    g_clear_object (&f->slot);
+    adw_tab_view_close_page (tabs, old);
+    g_object_get (f->window, "active-slot", &f->slot, NULL);
+}
+static void
+test_decode_tab_close (Fixture *f, gconstpointer unused)
+{
+    if (unused == NULL)
+    {
+        nautilus_window_open_location_full (NAUTILUS_WINDOW (f->window), f->child,
+            NAUTILUS_OPEN_FLAG_NEW_TAB | NAUTILUS_OPEN_FLAG_DONT_MAKE_ACTIVE, NULL);
+        settle (f);
+    }
+    toggle (f);
+    g_assert_true (gtk_widget_get_mapped (GTK_WIDGET (preview (f))));
+    g_autoptr (GFile) image = g_file_get_child (f->child, "decoding.png");
+    g_autofree char *path = g_file_get_path (image);
+    g_autoptr (GdkPixbuf) pixels = gdk_pixbuf_new (GDK_COLORSPACE_RGB, TRUE, 8, 2048, 1024);
+    gdk_pixbuf_fill (pixels, 0xCC6600FF);
+    g_autoptr (GError) error = NULL;
+    gboolean saved = gdk_pixbuf_save (pixels, path, "png", &error, NULL);
+    g_assert_no_error (error); g_assert_true (saved);
+    NautilusFilesView *view = nautilus_window_slot_get_current_view (f->slot);
+    g_autoptr (NautilusFile) file = nautilus_file_get (image);
+    gint64 deadline = g_get_monotonic_time () + 8 * G_TIME_SPAN_SECOND;
+    while (nautilus_view_model_get_item_for_file (nautilus_files_view_get_private_model (view), file) == NULL)
+    {
+        g_assert_cmpint (g_get_monotonic_time (), <, deadline); pump (10);
+    }
+    g_test_message ("Image row became available after %.3fs", (g_get_monotonic_time () - deadline + 8 * G_TIME_SPAN_SECOND) / 1e6);
+    NautilusMillerPreview *weak = preview (f);
+    g_object_add_weak_pointer (G_OBJECT (weak), (gpointer *) &weak);
+    g_autoptr (GtkWidget) status = g_object_ref (find_text (GTK_WIDGET (weak), "Select a file to preview", FALSE));
+    g_assert_nonnull (status);
+    DecodeClose close = { .fixture = f, .create_tab = unused != NULL };
+    g_signal_connect (status, "notify::label", G_CALLBACK (close_decoding_tab), &close);
+    select_one (view, image);
+    while (!close.closed)
+    {
+        if (g_get_monotonic_time () >= deadline)
+        {
+            gboolean busy; g_object_get (weak, "loading", &busy, NULL);
+            g_test_message ("Decode close phase: %s; loading=%d", gtk_label_get_text (GTK_LABEL (status)), busy);
+        }
+        g_assert_cmpint (g_get_monotonic_time (), <, deadline); pump (10);
+    }
+    settle (f); pump (100);
+    g_signal_handlers_disconnect_by_data (status, &close);
+    g_clear_object (&status);
+    gint64 release_deadline = g_get_monotonic_time () + 3 * G_TIME_SPAN_SECOND;
+    while (weak != NULL && g_get_monotonic_time () < release_deadline) { pump (10); }
+    g_assert_null (weak);
+    g_assert_true (nautilus_window_slot_get_current_view (f->slot) ==
+                   g_object_get_data (G_OBJECT (f->window), "nautilus-active-file-view"));
+}
+
+static void
+test_remote_preference (Fixture *f, gconstpointer unused)
+{
+    nautilus_preferences_dialog_show (f->window); pump (150);
+    GtkWidget *label = find_text (f->window, "Preview Remote Contents", FALSE);
+    g_assert_nonnull (label);
+    AdwSwitchRow *row = ADW_SWITCH_ROW (gtk_widget_get_ancestor (label, ADW_TYPE_SWITCH_ROW));
+    g_assert_nonnull (row); g_assert_false (adw_switch_row_get_active (row));
+    adw_switch_row_set_active (row, TRUE); pump (30);
+    g_assert_true (g_settings_get_boolean (nautilus_preferences, "miller-preview-remote"));
+    g_settings_set_boolean (nautilus_preferences, "miller-preview-remote", FALSE); pump (30);
+    g_assert_false (adw_switch_row_get_active (row));
+    AdwDialog *dialog = adw_application_window_get_visible_dialog (ADW_APPLICATION_WINDOW (f->window));
+    g_assert_nonnull (dialog); g_assert_true (adw_dialog_close (dialog)); pump (150);
+}
+
 static void
 test_process (void)
 {
     const char *phase = g_getenv ("MILLER_PREVIEW_STATE_PHASE");
     if (!phase) { g_test_skip ("Requires separate process dconf writer/reader"); return; }
     g_assert_cmpstr (g_getenv ("GSETTINGS_BACKEND"), ==, "dconf");
-    Fixture f = {0}; setup (&f, GINT_TO_POINTER (1));
+    Fixture f = {0}; setup (&f, &persistent_setup_marker);
     if (g_str_equal (phase, "write"))
     {
         toggle (&f);
@@ -395,9 +505,14 @@ main (int argc, char **argv)
     g_application_set_flags (G_APPLICATION (app), g_application_get_flags (G_APPLICATION (app)) | G_APPLICATION_NON_UNIQUE);
     g_assert_true (g_application_register (G_APPLICATION (app), NULL, NULL));
 #define CASE(name, fn) g_test_add ("/miller/preview-ui/" name, Fixture, NULL, setup, fn, teardown)
+    CASE ("decode-tab-close", test_decode_tab_close);
+    g_test_add ("/miller/preview-ui/decode-new-tab-close", Fixture, GINT_TO_POINTER (1), setup, test_decode_tab_close, teardown);
+    CASE ("remote-preference", test_remote_preference);
+    CASE ("background-close-entry-focus", test_background_close_entry_focus);
     CASE ("active-parent", test_active_parent); CASE ("empty-child", test_empty_child);
     CASE ("history-selection", test_history); CASE ("mode-special-return", test_mode_special);
     CASE ("tab-ownership", test_tabs); CASE ("controls-focus", test_controls_focus);
+    g_test_add ("/miller/preview-ui/inactive-tab-close", Fixture, GINT_TO_POINTER (1), setup, test_tabs, teardown);
     CASE ("width-independent", test_width); CASE ("drag-width", test_drag_width); CASE ("toggle-keys", test_toggle_keys);
     g_test_add_func ("/miller/preview-ui/process-state", test_process);
     int result = g_test_run (); miller_test_input_free (input); return result;

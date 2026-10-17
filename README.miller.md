@@ -16,7 +16,9 @@ The toolbar cycles **List → Grid → Columns → List** in ordinary folders. I
 
 Search, Recent, Starred, Trash, and the Network overview use their existing views. Columns returns when you resume ordinary folder browsing.
 
-In the development build, **View Options → Show Preview** or **Ctrl+Shift+P** toggles the optional inspector. It follows the active column’s selection, including a parent whose child is still open. It shows file/folder metadata, honest multiple-selection totals and bounded UTF-8 text (up to128KiB read and32KiB displayed). Unsupported content has a metadata fallback. Remote file contents are currently disabled. Images, document/media representations and expanded external-preview acceptance remain in development.
+In the development build, **View Options → Show Preview** or **Ctrl+Shift+P** toggles the optional inspector. It follows the active column’s selection, including a parent whose child is still open. It shows file/folder metadata, honest multiple-selection totals, bounded UTF-8 text, still images, and PDF/media thumbnails when an installed GNOME provider supports them. Unsupported content has an explicit metadata fallback. Images use the existing glycin sandbox; documents and media use Nautilus’s existing thumbnail queue. There is no autoplay.
+
+Remote contents are disabled by default. Enabling **Preview remote contents** also requires **Preferences → General → Performance → Show Thumbnails → All Files**. Reads remain bounded; unavailable content retains Open/Space actions. See [preview providers, privacy and limits](docs/miller/preview.md). Expanded acceptance with the installed external previewer remains in progress.
 
 Drag the native divider or use **Preview width** to resize the inspector independently of directory columns (240–800 logical pixels; default320). Visibility and width survive restart. **Open** and **Properties** use Nautilus’s existing actions. **Close Preview** returns focus to the active listing if the inspector owned it; location-entry focus is retained when toggling from there. These development changes have not been installed over the current RPM.
 
@@ -59,10 +61,11 @@ The installer requires the Fedora `fedora` and `updates` repositories to downloa
 ```sh
 python3 tools/miller/check-profile.py build-miller
 python3 test/miller/test-deployment.py
-XDG_CONFIG_HOME="$(mktemp -d)" meson test -C build-miller --print-errorlogs
+python3 tools/miller/with-test-session.py -- python3 tools/miller/with-test-home.py -- env GTK_A11Y=test GSETTINGS_SCHEMA_DIR="$PWD/build-miller/data" build-miller/test/automated/display/test-miller-view
+python3 test/miller/test-preview-io.py
 ```
 
-Use a temporary GTK configuration for tests because user themes can emit fatal GTK test warnings. The column tests cover path reconciliation, folder/file/multiple selection, ancestor highlights, resizing, focus, permission errors, history, view switching, live file-transfer updates, tabs, and search fallback. File transfers are exercised through Nautilus's existing operation API with the active column's backing URI; automated Wayland clipboard ownership requires a real input serial and is not used as an automated gate.
+These are focused checks. GUI tests use a private bus/compositor, disposable XDG directories and a mounted disposable Home while leaving `HOME` unchanged. Do not run legacy filesystem tests against the operator’s Home. See [input/testing procedures](docs/miller/input-testing.md) and the [acceptance ledger](docs/miller/acceptance.md) for full regression evidence and remaining gates. Current operation tests exercise Nautilus’s existing transfer API; genuine clipboard and drag acceptance remains required.
 
 The inherited `test-portal-file-chooser` has a render/response timeout on this host, also reproduced with the unchanged upstream baseline. See `docs/miller/verification.md` for the actual results and deployment record.
 

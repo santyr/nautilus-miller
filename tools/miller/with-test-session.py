@@ -2,6 +2,7 @@
 """Run a command in disposable XDG directories, D-Bus and a headless Mutter compositor."""
 import argparse
 import configparser
+import importlib.util
 import os
 from pathlib import Path
 import signal
@@ -79,6 +80,12 @@ def main():
             path = root / name
             path.mkdir(mode=0o700)
             env[key] = str(path)
+        if 'MILLER_TEST_HOME' in os.environ:
+            spec = importlib.util.spec_from_file_location('miller_cache_guard',
+                Path(__file__).with_name('with-delayed-backend.py'))
+            guard = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(guard)
+            env['XDG_CACHE_HOME'] = str(guard.masked_home_cache(create=True))
         (root / 'tmp').mkdir(mode=0o700)
         env['TMPDIR'] = str(root / 'tmp')
         env.pop('DISPLAY', None)

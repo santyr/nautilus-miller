@@ -108,3 +108,30 @@ python3 test/miller/test-preview-restart.py
 Nine ordinary cases cover parent and empty-child targets, history, Grid/special-view return, inactive/closed tabs and weak destruction, control focus/close, independent sizing, actual pointer enlargement/shrinking/minimum and repeated genuine Ctrl+Shift+P with a focused Ctrl+L entry. The tenth case skips unless the separate-process helper supplies its phase. That helper shares only private dconf/XDG and mounted disposable Home between two actual processes; it checks visibility,410-pixel pane sizing, remote-policy persistence, distinct PIDs and a real dconf database.
 
 Pane resizing uses GtkPaned and native mouse interaction. State persistence observes the divider position on release; it does not implement a second gesture. Open/Properties buttons resolve the existing Nautilus actions in the current action context. The directory scroller retains its minimum size when the inspector is hidden. [GTK4.22.5’s implementation](https://github.com/GNOME/gtk/blob/4.22.5/gtk/gtkpaned.c) describes its native shrink/resize policy. Existing New Folder wrong-target assertions also run with the inspector visible. These cases do not replace the required screen-reader/scaling/RTL or file-operation/clipboard/drag workflows.
+
+## Renderer and remote-content acceptance
+
+After building, the full standalone inspector run includes real providers and a paused owned backend:
+
+```sh
+python3 tools/miller/with-test-session.py -- python3 tools/miller/with-test-home.py -- python3 tools/miller/with-delayed-backend.py --pause-seconds 8 --preview-content -- env GTK_A11Y=test GSETTINGS_SCHEMA_DIR="$PWD/build-miller/data" build-miller/test/automated/display/test-miller-preview
+python3 test/miller/test-preview-io.py
+```
+
+Without the backend, cases that need it explicitly skip. The optional payload preserves the default archive contents for navigation/history tests and adds only owned200KiB text and a64×32 PNG. GdkPixbuf generates the PNG using the installed provider; FFmpeg generates finite owned VP8/WebM and PCM/WAV media for native thumbnail tests. These are test tools, not a new production decoder dependency.
+
+I/O observations include actual native descriptor flags/closure and128KiB read totals, real glycin sandbox executions, exactly two glycin load calls during1,000 selection replacements, remote-off QueryInfo without OpenForRead, exactly131072 bytes in32 shared GIO read calls for an enabled200KiB remote text input, and an independent GDB count of262144bytes/64GIO calls for the two native reads. Syscall records go to strace’s owned runtime output file and are read after completion, separately from concurrent service diagnostics. The GDB observers do not mutate application state; call counts do not establish physical child-process concurrency, RSS or input latency. Source-line observation excludes nested backend reads and avoids optimized-library return-value assumptions.
+
+The cache guard proves mounted Home identity and read-only host/source mounts before creating Home/.cache. Other XDG directories retain the owned temporary tree. Added guard tests reject a forged marker, a different mask inode and a symlink cache. This layout is needed by the existing GNOME Desktop provider sandbox, which binds its cache at the same absolute path; a nested /tmp cache created extra directories in its output mount and triggered a native cleanup warning. It does not permit the operator’s Home or cache.
+
+### GTK focus retention characterization
+
+The small [probe](fixtures/gtk-tab-close-probe.c) contains only GTK/libadwaita code. Compile outside the read-only test namespace and run both variants inside it:
+
+```sh
+cc docs/miller/fixtures/gtk-tab-close-probe.c -o build-miller/gtk-tab-close-probe $(pkg-config --cflags --libs gtk4 libadwaita-1)
+python3 tools/miller/with-test-session.py -- python3 tools/miller/with-test-home.py -- env GTK_A11Y=test build-miller/gtk-tab-close-probe
+python3 tools/miller/with-test-session.py -- python3 tools/miller/with-test-home.py -- env GTK_A11Y=test build-miller/gtk-tab-close-probe wait
+```
+
+On GTK4.22.5/libadwaita1.9.4 the empty-replacement, immediate switch/close retains the old child and exits23; separated actions release it and exit0. A focusable replacement does not reproduce. This is an explicit inherited observation, not a passing preview test or a waived resource acceptance requirement. The application tests now cover both a pre-existing background tab and immediate new-tab/close during decoding. Nautilus clears remaining focus only when closing an inactive slot that still owns it, using GTK’s existing focus API. Both assert weak destruction; genuine Ctrl+L remains focused when closing another tab. The pure library probe is retained without that application guard.

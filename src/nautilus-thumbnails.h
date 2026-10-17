@@ -32,6 +32,15 @@ void       nautilus_create_thumbnail_async          (const gchar         *uri,
                                                      GCancellable        *cancellable,
                                                      GAsyncReadyCallback  callback,
                                                      gpointer             user_data);
+/* Same native queue, limits, providers and finish function; omit both success
+ * and failure cache records for bounded temporary inspection inputs. A
+ * coalesced cached request retains its normal cache behavior. */
+void       nautilus_create_thumbnail_uncached_async (const gchar         *uri,
+                                                     const gchar         *mime_type,
+                                                     time_t               modified_time,
+                                                     GCancellable        *cancellable,
+                                                     GAsyncReadyCallback  callback,
+                                                     gpointer             user_data);
 GdkPixbuf *nautilus_create_thumbnail_finish         (GAsyncResult  *res,
                                                      GError       **error);
 gboolean   nautilus_can_thumbnail                   (const gchar *uri,

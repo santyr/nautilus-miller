@@ -60,5 +60,13 @@ print(json.dumps({'marker':str(path),'pid':int(data['compositor-pid'])}))
         self.assertGreater(state['pid'],0)
         self.assertFalse(Path(state['marker']).exists())
 
+    def test_forged_home_marker_cannot_change_cache(self):
+        env={**os.environ,'MILLER_TEST_HOME':'/tmp/navigation-home-forged',
+             'MILLER_TEST_REPOSITORY':str(SCRIPT.parents[2])}
+        result=subprocess.run([sys.executable,str(SCRIPT),'--','true'],env=env,
+                              capture_output=True,text=True,timeout=20)
+        self.assertNotEqual(result.returncode,0)
+        self.assertIn('mounted disposable home',result.stderr)
+
 if __name__ == '__main__':
     unittest.main()

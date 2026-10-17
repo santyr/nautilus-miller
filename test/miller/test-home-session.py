@@ -80,6 +80,55 @@ assert not list(root.glob('navigation-home-*'))
             '-c', code, str(HOME_SESSION)], capture_output=True, text=True, timeout=30)
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_cache_is_in_masked_home_and_backend_guard_accepts_it(self):
+        code = """import importlib.util,os,pathlib,stat,sys
+home=pathlib.Path.home();masked=pathlib.Path(os.environ['MILLER_TEST_HOME'])
+cache=pathlib.Path(os.environ['XDG_CACHE_HOME'])
+assert cache==home/'.cache',cache
+assert (cache.stat().st_dev,cache.stat().st_ino)==((masked/'.cache').stat().st_dev,(masked/'.cache').stat().st_ino)
+assert stat.S_IMODE(cache.stat().st_mode)==0o700
+spec=importlib.util.spec_from_file_location('cache_backend',sys.argv[1]);module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+module.private_session()
+(cache/'owned-cache-write').write_text('private')
+assert (masked/'.cache'/'owned-cache-write').read_text()=='private'
+"""
+        result=subprocess.run([sys.executable,str(SESSION),'--',sys.executable,str(HOME_SESSION),'--',
+            sys.executable,'-c',code,str(ROOT/'tools/miller/with-delayed-backend.py')],
+            capture_output=True,text=True,timeout=30)
+        self.assertEqual(result.returncode,0,result.stderr)
+
+    def test_cache_home_proof_rejects_forged_marker(self):
+        code = """import importlib.util,os,pathlib,sys
+root=pathlib.Path(os.environ['XDG_RUNTIME_DIR']).parent
+fake=root/'navigation-home-forged';fake.mkdir(mode=0o700)
+os.environ['MILLER_TEST_HOME']=str(fake)
+os.environ['XDG_CACHE_HOME']=str(pathlib.Path.home()/'.cache')
+spec=importlib.util.spec_from_file_location('cache_backend',sys.argv[1]);module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+try: module.private_session()
+except RuntimeError: pass
+else: raise AssertionError('Forged masked-home proof accepted')
+"""
+        result=subprocess.run([sys.executable,str(SESSION),'--',sys.executable,str(HOME_SESSION),'--',
+            sys.executable,'-c',code,str(ROOT/'tools/miller/with-delayed-backend.py')],
+            capture_output=True,text=True,timeout=30)
+        self.assertEqual(result.returncode,0,result.stderr)
+
+    def test_cache_guard_rejects_symlink(self):
+        code = """import importlib.util,os,pathlib,sys
+home=pathlib.Path.home();cache=home/'.cache';old=home/'.cache-aside'
+if cache.exists(): cache.rename(old)
+cache.symlink_to(pathlib.Path(os.environ['XDG_RUNTIME_DIR']).parent/'cache',target_is_directory=True)
+os.environ['XDG_CACHE_HOME']=str(cache)
+spec=importlib.util.spec_from_file_location('cache_backend',sys.argv[1]);module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+try: module.private_session()
+except RuntimeError: pass
+else: raise AssertionError('Symlink cache accepted')
+"""
+        result=subprocess.run([sys.executable,str(SESSION),'--',sys.executable,str(HOME_SESSION),'--',
+            sys.executable,'-c',code,str(ROOT/'tools/miller/with-delayed-backend.py')],
+            capture_output=True,text=True,timeout=30)
+        self.assertEqual(result.returncode,0,result.stderr)
+
 
 if __name__ == '__main__':
     unittest.main()

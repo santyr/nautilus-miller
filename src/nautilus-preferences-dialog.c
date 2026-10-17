@@ -182,6 +182,9 @@ nautilus_preferences_dialog_setup (GtkBuilder *builder)
                        "miller_type_to_select_row",
                        NAUTILUS_PREFERENCES_MILLER_TYPE_TO_SELECT);
     bind_builder_bool (builder, nautilus_preferences,
+                       "miller_preview_remote_row",
+                       NAUTILUS_PREFERENCES_MILLER_PREVIEW_REMOTE);
+    bind_builder_bool (builder, nautilus_preferences,
                        NAUTILUS_PREFERENCES_DIALOG_CREATE_LINK_WIDGET,
                        NAUTILUS_PREFERENCES_SHOW_CREATE_LINK);
     bind_builder_bool (builder, nautilus_preferences,

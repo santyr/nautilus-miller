@@ -4565,6 +4565,16 @@ get_speed_tradeoff_preference_for_file (NautilusFile               *file,
     }
 }
 
+/* Content inspection shares the native user/filesystem privacy policy, but
+ * row icon choices and already cached thumbnail size are separate concerns. */
+gboolean
+nautilus_file_should_preview (NautilusFile *file)
+{
+    g_return_val_if_fail (NAUTILUS_IS_FILE (file), FALSE);
+
+    return get_speed_tradeoff_preference_for_file (file, show_file_thumbs);
+}
+
 gboolean
 nautilus_file_should_show_thumbnail (NautilusFile *file)
 {
@@ -4601,7 +4611,7 @@ nautilus_file_should_show_thumbnail (NautilusFile *file)
         return TRUE;
     }
 
-    return get_speed_tradeoff_preference_for_file (file, show_file_thumbs);
+    return nautilus_file_should_preview (file);
 }
 
 static GList *

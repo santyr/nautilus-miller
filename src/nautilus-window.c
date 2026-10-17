@@ -689,6 +689,16 @@ window_slot_close (NautilusWindow     *window,
         return;
     }
 
+    /* A newly selected, still-empty tab may not have accepted focus yet.
+     * Clear focus left in its background predecessor before unparenting it:
+     * GTK may already have a deferred focus move for that hidden subtree. */
+    GtkWidget *focus = gtk_root_get_focus (GTK_ROOT (window));
+    if (window->active_slot != slot && focus != NULL &&
+        (focus == GTK_WIDGET (slot) || gtk_widget_is_ancestor (focus, GTK_WIDGET (slot))))
+    {
+        gtk_window_set_focus (GTK_WINDOW (window), NULL);
+    }
+
     data = nautilus_window_slot_get_navigation_state (slot);
     if (data != NULL)
     {

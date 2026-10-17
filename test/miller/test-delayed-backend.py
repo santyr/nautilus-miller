@@ -29,6 +29,21 @@ class DelayedBackend(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('owned private session', result.stderr)
 
+    def test_optional_preview_payload_and_marker(self):
+        child = '''import configparser,os,subprocess
+config=configparser.ConfigParser(interpolation=None);config.read(os.environ['MILLER_TEST_BACKEND'])
+state=config['backend'];assert state.getboolean('preview-content')
+result=subprocess.run(['gio','list',state['root-uri']+'A/'],capture_output=True,text=True,timeout=5)
+assert result.returncode==0,result.stderr
+assert set(result.stdout.splitlines())=={'a.txt','large.txt','image.png'},result.stdout
+'''
+        code = f'''import subprocess,sys
+result=subprocess.run([sys.executable,sys.argv[1],'--preview-content','--',sys.executable,'-c',{child!r}],capture_output=True,text=True,timeout=20)
+assert result.returncode==0,result.stderr
+'''
+        result=self.private(code)
+        self.assertEqual(result.returncode,0,result.stderr)
+
     def test_pause_limit_is_bounded_before_mount(self):
         for value in ['0', '11', 'not-a-number']:
             result = subprocess.run([sys.executable, str(BACKEND), '--pause-seconds', value,

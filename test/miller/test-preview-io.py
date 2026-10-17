@@ -1,6 +1,7 @@
 #!/usr/bin/python3
 """Observe actual preview reads and remote protocol in disposable sessions."""
-import os
+import ast
+import json
 from pathlib import Path
 import re
 import shutil
@@ -28,19 +29,55 @@ class PreviewIO(unittest.TestCase):
         self.assertEqual(result.returncode, 0, (result.stdout + result.stderr)[-6000:])
         return result
 
-    @unittest.skipUnless(shutil.which('strace'), 'Requires strace for actual read observations')
-    def test_native_reads_stop_at_128k_each(self):
+    def trace(self, arguments):
+        # Keep syscall output separate from concurrently writing GJS/GVfs/bus
+        # diagnostics. Print it only after strace exits, from its owned file.
+        capture = '''import json,os,pathlib,subprocess,sys
+trace=pathlib.Path(os.environ['XDG_RUNTIME_DIR'])/'preview-observation.strace'
+result=subprocess.run(['strace','-o',str(trace),*sys.argv[1:]],capture_output=True,text=True)
+print('MILLER_STRACE='+json.dumps(trace.read_text()),flush=True)
+sys.stdout.write(result.stdout);sys.stderr.write(result.stderr)
+raise SystemExit(result.returncode)
+'''
         result = self.private(['env', 'GTK_A11Y=test',
             f'GSETTINGS_SCHEMA_DIR={ROOT / "build-miller/data"}',
-            'strace', '-f', '-qq', '-yy', '-s', '0', '-e', 'trace=openat,read,close',
+            sys.executable, '-c', capture, *arguments])
+        match = re.search(r'^MILLER_STRACE=(.*)$', result.stdout, re.MULTILINE)
+        self.assertIsNotNone(match, 'Missing dedicated strace output')
+        return result, json.loads(match.group(1))
+
+    @unittest.skipUnless(shutil.which('gdb'), 'Requires GDB for actual GIO read observations')
+    def test_remote_opt_in_reads_at_most_128k(self):
+        result = self.private([sys.executable, str(BACKEND), '--preview-content', '--',
+            'env', 'GTK_A11Y=test', f'GSETTINGS_SCHEMA_DIR={ROOT / "build-miller/data"}',
+            'gdb', '-q', '-batch', '-x', str(ROOT / 'test/miller/preview-read-observer.gdb'),
+            '--args', str(BINARY), '-p', '/miller/preview/remote-bounded-read'])
+        self.assertIn('ok 1 /miller/preview/remote-bounded-read', result.stdout)
+        self.assertNotIn('# SKIP', result.stdout)
+        self.assertIn('PREVIEW_READ_BYTES=131072', result.stdout)
+        self.assertIn('PREVIEW_READ_CALLS=32', result.stdout)
+
+    @unittest.skipUnless(shutil.which('gdb'), 'Requires GDB for independent native read observations')
+    def test_native_bound_has_independent_gio_count(self):
+        result = self.private(['env', 'GTK_A11Y=test',
+            f'GSETTINGS_SCHEMA_DIR={ROOT / "build-miller/data"}',
+            'gdb', '-q', '-batch', '-x', str(ROOT / 'test/miller/preview-read-observer.gdb'),
+            '--args', str(BINARY), '-p', '/miller/preview/text-bounds'])
+        self.assertIn('ok 1 /miller/preview/text-bounds', result.stdout)
+        self.assertIn('PREVIEW_READ_BYTES=262144', result.stdout)
+        self.assertIn('PREVIEW_READ_CALLS=64', result.stdout)
+
+    @unittest.skipUnless(shutil.which('strace'), 'Requires strace for actual read observations')
+    def test_native_reads_stop_at_128k_each(self):
+        result, trace = self.trace(['-f', '-qq', '-yy', '-s', '0', '-e', 'trace=openat,read,close',
             str(BINARY), '-p', '/miller/preview/text-bounds'])
         self.assertIn('ok 1 /miller/preview/text-bounds', result.stdout)
         # Threads share descriptors. Match annotated fixture paths, not arbitrary
         # descriptor numbers or unrelated subprocess/system-file reads.
         handles, current, pending = [], {}, {}
-        for line in result.stderr.splitlines():
-            prefix = re.match(r'\[pid\s+(\d+)\]\s+(.*)', line)
-            pid, call = (prefix.group(1), prefix.group(2)) if prefix else ('main', line)
+        for line in trace.splitlines():
+            prefix = re.match(r'(?:\[pid\s+(\d+)\]|(\d+))\s+(.*)', line)
+            pid, call = ((prefix.group(1) or prefix.group(2)), prefix.group(3)) if prefix else ('main', line)
             if '<unfinished ...>' in call:
                 pending[pid] = call.split('<unfinished ...>')[0]
                 continue
@@ -69,6 +106,39 @@ class PreviewIO(unittest.TestCase):
         self.assertEqual(len(handles), 2, f'Expected two preview opens: {handles}')
         self.assertEqual([item['bytes'] for item in handles], [128 * 1024, 128 * 1024])
         print(f'Observed native preview reads: {handles}', flush=True)
+
+    @unittest.skipUnless(shutil.which('strace'), 'Requires strace for actual provider observations')
+    def test_image_provider_runs_with_native_sandbox(self):
+        result, trace = self.trace(['-f', '-qq', '-s', '8192', '-e', 'trace=execve',
+            str(BINARY), '-p', '/miller/preview/png-jpeg-still'])
+        self.assertIn('ok 1 /miller/preview/png-jpeg-still', result.stdout)
+        launches = []
+        for line in trace.splitlines():
+            match = re.search(r'execve\("([^\"]+)", (\[.*\]), 0x', line)
+            if not match or '= 0' not in line or Path(match.group(1)).name != 'bwrap':
+                continue
+            args = ast.literal_eval(match.group(2))
+            if any('glycin-loaders/' in arg for arg in args):
+                launches.append(args)
+        self.assertTrue(launches, 'No successful sandboxed glycin loader launch observed')
+        for args in launches:
+            self.assertIn('--unshare-all', args)
+            self.assertIn('--seccomp', args)
+            self.assertIn('--clearenv', args)
+            self.assertNotIn('--share-net', args)
+            self.assertFalse(any(re.search(r'/nautilus\.[^/]+', arg) for arg in args),
+                             'Provider received the original fixture directory')
+        print(f'Observed glycin sandbox launches: {len(launches)}; unshare-all/seccomp/clearenv; no source-directory bind.', flush=True)
+
+    @unittest.skipUnless(shutil.which('gdb'), 'Requires GDB for actual library request counts')
+    def test_rapid_changes_coalesce_actual_decoder_requests(self):
+        result = self.private(['env', 'GTK_A11Y=test',
+            f'GSETTINGS_SCHEMA_DIR={ROOT / "build-miller/data"}',
+            'gdb', '--batch', '-x', str(ROOT / 'test/miller/preview-loader-observer.gdb'),
+            '--args', str(BINARY), '-p', '/miller/preview/rapid-replacement-budget'])
+        self.assertIn('ok 1 /miller/preview/rapid-replacement-budget', result.stdout)
+        self.assertRegex(result.stdout, r'(?m)^GLYCIN_PREVIEW_REQUESTS=2$')
+        print('Observed actual glycin API requests for1,000 selection replacements: 2 (original and latest).', flush=True)
 
     def test_remote_off_queries_metadata_without_opening_content(self):
         result = self.private([sys.executable, str(BACKEND), '--', 'env',

@@ -72,6 +72,7 @@ typedef struct
     GPtrArray *callbacks;
 
     GError *error;
+    gboolean cache;
 } NautilusThumbnailInfo;
 
 typedef struct
@@ -357,13 +358,14 @@ handle_callbacks_and_free (NautilusThumbnailInfo *info)
     free_thumbnail_info (info);
 }
 
-void
-nautilus_create_thumbnail_async (const gchar         *uri,
-                                 const gchar         *mime_type,
-                                 time_t               modified_time,
-                                 GCancellable        *cancellable,
-                                 GAsyncReadyCallback  callback,
-                                 gpointer             user_data)
+static void
+create_thumbnail_async (const gchar         *uri,
+                        const gchar         *mime_type,
+                        time_t               modified_time,
+                        GCancellable        *cancellable,
+                        GAsyncReadyCallback  callback,
+                        gpointer             user_data,
+                        gboolean             cache)
 {
     g_return_if_fail (uri != NULL && *uri != '\0');
 
@@ -372,6 +374,7 @@ nautilus_create_thumbnail_async (const gchar         *uri,
 
     info->image_uri = g_strdup (uri);
     info->mime_type = g_strdup (mime_type);
+    info->cache = cache;
     info->callbacks = g_ptr_array_new_with_free_func ((GDestroyNotify) free_thumbnail_callback);
 
     cb_data->cancellable = cancellable != NULL ? g_object_ref (cancellable) : NULL;
@@ -439,8 +442,25 @@ nautilus_create_thumbnail_async (const gchar         *uri,
 
         /* The file in the queue might need a new original mtime */
         existing_info->updated_file_mtime = info->original_file_mtime;
+        /* A regular listing request still owns its normal cache behavior
+         * when joined by a noncaching inspection request for the same URI. */
+        existing_info->cache |= cache;
         g_ptr_array_add (existing_info->callbacks, g_steal_pointer (&cb_data));
     }
+}
+
+void
+nautilus_create_thumbnail_async (const gchar *uri, const gchar *mime_type, time_t modified_time,
+                                 GCancellable *cancellable, GAsyncReadyCallback callback, gpointer user_data)
+{
+    create_thumbnail_async (uri, mime_type, modified_time, cancellable, callback, user_data, TRUE);
+}
+
+void
+nautilus_create_thumbnail_uncached_async (const gchar *uri, const gchar *mime_type, time_t modified_time,
+                                          GCancellable *cancellable, GAsyncReadyCallback callback, gpointer user_data)
+{
+    create_thumbnail_async (uri, mime_type, modified_time, cancellable, callback, user_data, FALSE);
 }
 
 GdkPixbuf *
@@ -577,6 +597,11 @@ thumbnail_generated_cb (GObject      *source_object,
         gdk_pixbuf_set_option (pixbuf, "tEXt::Thumb::MTime", mtime);
         g_clear_object (&info->pixbuf);
         info->pixbuf = pixbuf;
+        if (!info->cache)
+        {
+            thumbnail_finalize (info);
+            return;
+        }
 
         gnome_desktop_thumbnail_factory_save_thumbnail_async (thumbnail_factory,
                                                               pixbuf,
@@ -589,6 +614,11 @@ thumbnail_generated_cb (GObject      *source_object,
     else
     {
         info->error = g_error_copy (error);
+        if (!info->cache)
+        {
+            thumbnail_finalize (info);
+            return;
+        }
         g_debug ("(Thumbnail Async Thread) Thumbnail failed: %s (%s)",
                  info->image_uri, error->message);
 

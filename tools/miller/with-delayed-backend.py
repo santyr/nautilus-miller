@@ -8,6 +8,7 @@ import argparse
 import configparser
 import os
 from pathlib import Path
+import pwd
 import signal
 import socket
 import stat
@@ -30,6 +31,40 @@ def owned(path, mode=None):
     if mode is not None and stat.S_IMODE(info.st_mode) != mode:
         raise RuntimeError('Backend requires private permissions')
     return info
+
+
+def masked_home_cache(create=False):
+    """Prove the mounted disposable Home before allowing its native cache path.
+
+    GNOME Desktop's provider sandbox binds its cache at the original absolute
+    path. A cache beneath /tmp creates extra directories in its output mount.
+    Keep HOME unchanged and use .cache only after proving the Home bind mount.
+    """
+    try:
+        home = Path(os.environ['HOME'])
+        masked = Path(os.environ['MILLER_TEST_HOME'])
+        repo = Path(os.environ['MILLER_TEST_REPOSITORY'])
+        if (home != Path(pwd.getpwuid(os.getuid()).pw_dir)
+                or not masked.name.startswith('navigation-home-')
+                or not masked.parent.name.startswith('nautilus-miller-tests-')):
+            raise RuntimeError('Home identity differs')
+        owned(masked.parent, 0o700)
+        actual, expected = owned(home, 0o700), owned(masked, 0o700)
+        if ((actual.st_dev, actual.st_ino) != (expected.st_dev, expected.st_ino)
+                or not stat.S_ISDIR(actual.st_mode)
+                or not os.statvfs('/').f_flag & os.ST_RDONLY
+                or repo.resolve() != repo or not repo.is_relative_to(home)
+                or not (repo / 'src/nautilus-miller-view.c').is_file()
+                or not os.statvfs(repo).f_flag & os.ST_RDONLY):
+            raise RuntimeError('Home mount differs')
+        cache = home / '.cache'
+        if create:
+            cache.mkdir(mode=0o700, exist_ok=True)
+        if not stat.S_ISDIR(owned(cache, 0o700).st_mode):
+            raise RuntimeError('Cache is not a directory')
+        return cache
+    except (KeyError, OSError, RuntimeError) as error:
+        raise RuntimeError('Cache requires the mounted disposable home') from error
 
 
 def private_session():
@@ -71,7 +106,8 @@ def private_session():
                       ('XDG_CACHE_HOME', 'cache'), ('XDG_STATE_HOME', 'state'), ('TMPDIR', 'tmp')]:
         path = Path(os.environ.get(key, '/'))
         if path != root / name:
-            raise RuntimeError('Backend requires the private XDG tree')
+            if key != 'XDG_CACHE_HOME' or path != masked_home_cache():
+                raise RuntimeError('Backend requires the private XDG tree')
         owned(path, 0o700)
     return root, runtime, address
 
@@ -167,8 +203,9 @@ def open_verified_backend(pid, address, pause_seconds=5):
 
 
 class BackendFixture:
-    def __init__(self, pause_seconds=5):
+    def __init__(self, pause_seconds=5, preview_content=False):
         self.process = self.directory = self.uri = None
+        self.preview_content = preview_content
         if type(pause_seconds) is not int or not 1 <= pause_seconds <= 10:
             raise ValueError('Private pause limit must be an integer from 1 to 10 seconds')
         self.pause_seconds = pause_seconds
@@ -187,6 +224,17 @@ class BackendFixture:
                 output.writestr('A/a.txt', 'a')
                 output.writestr('B/', '')
                 output.writestr('B/b.txt', 'b')
+                if self.preview_content:
+                    output.writestr('A/large.txt', b'x' * (200 * 1024))
+                    import gi
+                    gi.require_version('GdkPixbuf', '2.0')
+                    from gi.repository import GdkPixbuf
+                    pixels = GdkPixbuf.Pixbuf.new(GdkPixbuf.Colorspace.RGB, True, 8, 64, 32)
+                    pixels.fill(0xCC6600FF)
+                    image = Path(self.directory.name) / 'image.png'
+                    pixels.savev(str(image), 'png', [], [])
+                    output.write(image, 'A/image.png')
+                    image.unlink()
             import gi
             gi.require_version('Gio', '2.0')
             from gi.repository import Gio, GLib
@@ -257,7 +305,7 @@ class BackendFixture:
         server.settimeout(.1)
         config = configparser.ConfigParser(interpolation=None)
         config['backend'] = {'root-uri': self.uri, 'control': str(control), 'pid': str(self.process.pid),
-                             'pause-seconds': str(self.pause_seconds)}
+                             'pause-seconds': str(self.pause_seconds), 'preview-content': str(self.preview_content).lower()}
         with os.fdopen(os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), 'w') as output:
             config.write(output)
 
@@ -316,6 +364,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--pause-seconds', type=int, choices=range(1, 11), default=5,
                         help='failing watchdog limit (default: 5; maximum: 10 seconds)')
+    parser.add_argument('--preview-content', action='store_true', help='include bounded preview fixtures')
     parser.add_argument('command', nargs=argparse.REMAINDER)
     args = parser.parse_args()
     command = args.command[1:] if args.command[:1] == ['--'] else args.command
@@ -324,7 +373,7 @@ def main():
     def terminate(signum, frame):
         raise SystemExit(128 + signum)
     signal.signal(signal.SIGTERM, terminate)
-    with BackendFixture(args.pause_seconds) as fixture:
+    with BackendFixture(args.pause_seconds, args.preview_content) as fixture:
         return fixture.run(command)
 
 
