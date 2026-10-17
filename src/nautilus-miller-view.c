@@ -1107,10 +1107,26 @@ nautilus_miller_view_get_loading (NautilusMillerView *self)
 void
 nautilus_miller_view_set_active (NautilusMillerView *self, gboolean active)
 {
+    gboolean activating = active && !self->active;
     self->active = active;
     nautilus_miller_preview_set_active (self->preview, active && gtk_widget_get_visible (self->preview_box));
     if (!active) { typeahead_preference_changed (nautilus_preferences, NULL, self); }
     if (self->active_view != NULL) { nautilus_files_view_set_action_context (self->active_view, active); }
+    GtkRoot *root = gtk_widget_get_root (GTK_WIDGET (self));
+    if (activating && GTK_IS_WINDOW (root) && !gtk_window_is_active (GTK_WINDOW (root)))
+    {
+        GtkWidget *focus = gtk_root_get_focus (root);
+        if (focus == NULL ||
+            (!GTK_IS_EDITABLE (focus) &&
+             gtk_widget_get_ancestor (focus, GTK_TYPE_POPOVER) == NULL &&
+             gtk_widget_get_ancestor (focus, ADW_TYPE_DIALOG) == NULL))
+        {
+            /* A native transfer dialog can own the keyboard while a new tab
+             * is activated. Cache this tab's existing listing focus for the
+             * parent's eventual return, preserving entries and dialogs. */
+            gtk_widget_grab_focus (GTK_WIDGET (self));
+        }
+    }
 }
 
 void

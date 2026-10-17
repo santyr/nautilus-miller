@@ -7,9 +7,9 @@ Development branch: `finder-completion`; baseline `8618e792713ae6b248c4ca7d740ae
 | ID | Required scenario | Owning stage | Status | Revision / procedure / evidence |
 |---|---|---|---|---|
 | C01 | Late branch replacement | Stage 1/2 | Open | Development build passes actual delayed archive A→B with real keys; release-candidate acceptance remains. |
-| C02 | Paste/create in focused parent | Stage 1/4 | Open | Genuine parent Paste passes with child disclosed; [clipboard evidence](operations-verification.md). Genuine New Folder and component review/release gate remain. |
-| C03 | Empty-column destination and Left | Stage 1/4 | Open | Genuine Right/Paste/Left in empty child passes; [evidence](operations-verification.md). New Folder and component review/release gate remain. |
-| C04 | Captured context menu/dialog destination | Stage 1/4 | Open | Expanded acceptance pending; baseline evidence not sufficient. |
+| C02 | Paste/create in focused parent | Stage 1/4 | Open | Genuine parent Paste and New Folder pass with child disclosed, including toolbar-entry action context; [evidence](operations-verification.md). Component review/release gate remains. |
+| C03 | Empty-column destination and Left | Stage 1/4 | Open | Genuine Right/Paste/Left and New Folder in empty child pass; [evidence](operations-verification.md). Transient empty non-rightmost ancestor, component review/release gate remain. |
+| C04 | Captured context menu/dialog destination | Stage 1/4 | Open | Native Rename/Copy/Move To, inactive-column menu, removed source view Accept/Cancel and monitor rename pass among25 actual operation cases in both profiles. [Evidence](operations-verification.md); remaining actions/extensions/component review/release acceptance remain. |
 | C05 | Real clipboard, conflicts, undo/redo | Stage 4 | Open | Nine clipboard cases pass in each profile plus the full39/53/10/4/89 gate, including independent GTK source, delayed transfer across tabs, copy Undo/Redo and duplicate; [evidence](operations-verification.md). Native conflicts/other operations/component review/release remain. |
 | C06 | Nested spring-loaded drag/cancel | Stage 4 | Open | Expanded acceptance pending; baseline evidence not sufficient. |
 | C07 | Safe stale-proof inline preview | Stage 3 | Open | Development inspector53/53, native UI15/15 and whole-preview review/corrections pass; release/real-remote acceptance remains. |

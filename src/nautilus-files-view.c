@@ -2082,9 +2082,27 @@ create_new_folder_callback (const char *folder_name,
      * that created the dialog, but we want the focus to be in the newly created
      * folder.
      */
-    gtk_widget_grab_focus (GTK_WIDGET (view));
+    if (view->active)
+    {
+        gtk_widget_grab_focus (GTK_WIDGET (view));
+    }
 
     g_object_unref (parent);
+}
+
+static void
+new_folder_dialog_closed (AdwDialog            *dialog,
+                          AdwApplicationWindow *window)
+{
+    NautilusFilesView *view = g_object_get_data (G_OBJECT (dialog), "nautilus-new-folder-view");
+
+    if (!view->active && gtk_widget_get_mapped (GTK_WIDGET (window)) &&
+        adw_application_window_get_visible_dialog (ADW_APPLICATION_WINDOW (window)) == NULL)
+    {
+        /* GTK cannot restore focus into an inactive source column. The
+         * window already knows how to focus its current slot/search/view. */
+        gtk_widget_grab_focus (GTK_WIDGET (window));
+    }
 }
 
 static void
@@ -2105,12 +2123,22 @@ nautilus_files_view_new_folder_dialog_new (NautilusFilesView *view,
         common_prefix = nautilus_get_common_filename_prefix (selection, MIN_COMMON_FILENAME_PREFIX_LENGTH);
     }
 
-    (void) nautilus_new_folder_dialog_new (GTK_WIDGET (view),
-                                           containing_directory,
-                                           with_selection,
-                                           common_prefix,
-                                           create_new_folder_callback,
-                                           view);
+    NautilusNewFolderDialog *dialog = nautilus_new_folder_dialog_new (GTK_WIDGET (view),
+                                                                     containing_directory,
+                                                                     with_selection,
+                                                                     common_prefix,
+                                                                     create_new_folder_callback,
+                                                                     view);
+    /* The dialog is hosted by the window and may outlive this column. Its
+     * callback still needs the originating view after a branch replacement. */
+    g_object_set_data_full (G_OBJECT (dialog), "nautilus-new-folder-view",
+                            g_object_ref (view), g_object_unref);
+    GtkRoot *root = gtk_widget_get_root (GTK_WIDGET (view));
+    if (ADW_IS_APPLICATION_WINDOW (root))
+    {
+        g_signal_connect_object (dialog, "closed", G_CALLBACK (new_folder_dialog_closed),
+                                  root, G_CONNECT_AFTER);
+    }
 }
 
 typedef struct
@@ -3060,6 +3088,12 @@ nautilus_files_view_set_action_context (NautilusFilesView *view, gboolean active
 {
     GtkRoot *root = gtk_widget_get_root (GTK_WIDGET (view));
     view->active = active;
+    /* Managed shortcuts are registered with the window's shortcut manager
+     * and resolve named actions against their originating FilesView. Only
+     * the active view may offer them outside its own focused subtree. */
+    gtk_shortcut_controller_set_scope (view->shortcuts,
+                                       active ? GTK_SHORTCUT_SCOPE_MANAGED
+                                              : GTK_SHORTCUT_SCOPE_LOCAL);
     if (!active && view->managed_context)
     {
         /* End the old popup interaction before GTK can restore focus to its
@@ -5792,6 +5826,7 @@ static void
 copy_data_free (CopyCallbackData *data)
 {
     nautilus_file_list_free (data->selection);
+    g_clear_object (&data->view);
     g_free (data);
 }
 
@@ -5865,7 +5900,9 @@ copy_or_move_selection (NautilusFilesView *view,
     gtk_file_dialog_set_accept_label (dialog, _("_Select"));
 
     copy_data = g_new0 (CopyCallbackData, 1);
-    copy_data->view = view;
+    /* The chooser can outlive this column or tab. Keep its original view
+     * valid until the captured selection has been handed to native jobs. */
+    copy_data->view = g_object_ref (view);
     copy_data->selection = selection;
     copy_data->is_move = is_move;
 
