@@ -1518,6 +1518,8 @@ app_choosen (AdwDialog *dialog,
     adw_dialog_close (ADW_DIALOG (dialog));
 }
 
+static void file_view_dialog_watch_close (AdwDialog *dialog, NautilusFilesView *view);
+
 static void
 choose_program (NautilusFilesView *view,
                 GList             *files)
@@ -1540,6 +1542,9 @@ choose_program (NautilusFilesView *view,
                             "directory-view:files",
                             files,
                             (GDestroyNotify) nautilus_file_list_free);
+    g_object_set_data_full (G_OBJECT (dialog), "nautilus-dialog-source-view",
+                            g_object_ref (view), g_object_unref);
+    file_view_dialog_watch_close (ADW_DIALOG (dialog), view);
 
     adw_dialog_present (ADW_DIALOG (dialog), GTK_WIDGET (parent_window));
 
@@ -2091,10 +2096,10 @@ create_new_folder_callback (const char *folder_name,
 }
 
 static void
-new_folder_dialog_closed (AdwDialog            *dialog,
+file_view_dialog_closed (AdwDialog            *dialog,
                           AdwApplicationWindow *window)
 {
-    NautilusFilesView *view = g_object_get_data (G_OBJECT (dialog), "nautilus-new-folder-view");
+    NautilusFilesView *view = g_object_get_data (G_OBJECT (dialog), "nautilus-dialog-source-view");
 
     if (!view->active && gtk_widget_get_mapped (GTK_WIDGET (window)) &&
         adw_application_window_get_visible_dialog (ADW_APPLICATION_WINDOW (window)) == NULL)
@@ -2102,6 +2107,18 @@ new_folder_dialog_closed (AdwDialog            *dialog,
         /* GTK cannot restore focus into an inactive source column. The
          * window already knows how to focus its current slot/search/view. */
         gtk_widget_grab_focus (GTK_WIDGET (window));
+    }
+}
+
+static void
+file_view_dialog_watch_close (AdwDialog         *dialog,
+                              NautilusFilesView *view)
+{
+    GtkRoot *root = gtk_widget_get_root (GTK_WIDGET (view));
+    if (ADW_IS_APPLICATION_WINDOW (root))
+    {
+        g_signal_connect_object (dialog, "closed", G_CALLBACK (file_view_dialog_closed),
+                                  root, G_CONNECT_AFTER);
     }
 }
 
@@ -2131,14 +2148,9 @@ nautilus_files_view_new_folder_dialog_new (NautilusFilesView *view,
                                                                      view);
     /* The dialog is hosted by the window and may outlive this column. Its
      * callback still needs the originating view after a branch replacement. */
-    g_object_set_data_full (G_OBJECT (dialog), "nautilus-new-folder-view",
+    g_object_set_data_full (G_OBJECT (dialog), "nautilus-dialog-source-view",
                             g_object_ref (view), g_object_unref);
-    GtkRoot *root = gtk_widget_get_root (GTK_WIDGET (view));
-    if (ADW_IS_APPLICATION_WINDOW (root))
-    {
-        g_signal_connect_object (dialog, "closed", G_CALLBACK (new_folder_dialog_closed),
-                                  root, G_CONNECT_AFTER);
-    }
+    file_view_dialog_watch_close (ADW_DIALOG (dialog), view);
 }
 
 typedef struct
@@ -2295,6 +2307,7 @@ static void
 compress_callback_data_free (CompressCallbackData *data)
 {
     nautilus_file_list_free (data->selection);
+    g_clear_object (&data->view);
     g_free (data);
 }
 
@@ -2332,7 +2345,8 @@ nautilus_files_view_compress_dialog_new (NautilusFilesView *view)
     }
 
     data = g_new0 (CompressCallbackData, 1);
-    data->view = view;
+    /* The window-hosted dialog can outlive its originating column. */
+    data->view = g_object_ref (view);
     data->selection = g_steal_pointer (&selection);
 
     compress_dialog = nautilus_compress_dialog_new (nautilus_files_view_get_containing_window (view),
@@ -2343,6 +2357,10 @@ nautilus_files_view_compress_dialog_new (NautilusFilesView *view)
     g_object_weak_ref (G_OBJECT (compress_dialog),
                        (GWeakNotify) compress_callback_data_free,
                        data);
+    /* Callback data owns the view until dialog destruction. Reuse the same
+     * inactive-source focus return as the native New Folder dialog. */
+    g_object_set_data (G_OBJECT (compress_dialog), "nautilus-dialog-source-view", view);
+    file_view_dialog_watch_close (ADW_DIALOG (compress_dialog), view);
 }
 
 static void
@@ -2507,6 +2525,24 @@ action_current_dir_open_console (GSimpleAction *action,
 }
 
 static void
+files_view_present_properties (NautilusFilesView *view,
+                                NautilusFileList  *files)
+{
+    GtkRoot *root = gtk_widget_get_root (GTK_WIDGET (view));
+    nautilus_properties_present_dialog (files, GTK_WIDGET (view));
+    if (ADW_IS_APPLICATION_WINDOW (root))
+    {
+        AdwDialog *dialog = adw_application_window_get_visible_dialog (ADW_APPLICATION_WINDOW (root));
+        if (dialog != NULL)
+        {
+            g_object_set_data_full (G_OBJECT (dialog), "nautilus-dialog-source-view",
+                                    g_object_ref (view), g_object_unref);
+            file_view_dialog_watch_close (dialog, view);
+        }
+    }
+}
+
+static void
 action_properties (GSimpleAction *action,
                    GVariant      *state,
                    gpointer       user_data)
@@ -2524,14 +2560,14 @@ action_properties (GSimpleAction *action,
         {
             files = g_list_append (NULL, nautilus_file_ref (self->directory_as_file));
 
-            nautilus_properties_present_dialog (files, GTK_WIDGET (self));
+            files_view_present_properties (self, files);
 
             nautilus_file_list_free (files);
         }
     }
     else
     {
-        nautilus_properties_present_dialog (selection, GTK_WIDGET (self));
+        files_view_present_properties (self, selection);
     }
 }
 
@@ -2550,7 +2586,7 @@ action_current_dir_properties (GSimpleAction *action,
     {
         files = g_list_append (NULL, nautilus_file_ref (self->directory_as_file));
 
-        nautilus_properties_present_dialog (files, GTK_WIDGET (self));
+        files_view_present_properties (self, files);
 
         nautilus_file_list_free (files);
     }
@@ -6059,6 +6095,9 @@ real_action_rename (NautilusFilesView *view)
 
             dialog = nautilus_batch_rename_dialog_new (g_steal_pointer (&selection),
                                                        window);
+            g_object_set_data_full (G_OBJECT (dialog), "nautilus-dialog-source-view",
+                                    g_object_ref (view), g_object_unref);
+            file_view_dialog_watch_close (ADW_DIALOG (dialog), view);
 
             adw_dialog_present (ADW_DIALOG (dialog), GTK_WIDGET (window));
         }
@@ -6244,6 +6283,7 @@ on_extract_destination_dialog_response (GtkFileDialog *dialog,
     }
 
     nautilus_file_list_free (data->files);
+    g_clear_object (&data->view);
     g_free (data);
 }
 
@@ -6270,7 +6310,8 @@ extract_files_to_chosen_location (NautilusFilesView *view,
 
     gtk_file_dialog_set_initial_folder (dialog, location);
 
-    data->view = view;
+    /* The native chooser may outlive a removed source column. */
+    data->view = g_object_ref (view);
     data->files = nautilus_file_list_copy (files);
 
     gtk_file_dialog_select_folder (dialog,

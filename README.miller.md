@@ -22,6 +22,25 @@ Remote contents are disabled by default. Enabling **Preview remote contents** al
 
 Drag the native divider or use **Preview width** to resize the inspector independently of directory columns (240–800 logical pixels; default320). Visibility and width survive restart. **Open** and **Properties** use Nautilus’s existing actions. **Close Preview** returns focus to the active listing if the inspector owned it; location-entry focus is retained when toggling from there. These development changes have not been installed over the current RPM.
 
+## File operations in Columns
+
+The focused column owns ordinary file actions. Paste, New Folder, New Document and Open in Console use its directory, including a parent whose child remains displayed. A context menu uses the clicked column; native dialogs retain their initiating selection when another column or tab becomes active.
+
+| Action | Native input |
+|---|---|
+| Open / Open With | Enter / context menu |
+| Copy, Cut, Paste | Ctrl+C, Ctrl+X, Ctrl+V |
+| New Folder / New Document | Ctrl+Shift+N / background context menu |
+| Rename one or several files | F2 |
+| Link from clipboard / link in place | Ctrl+M / Ctrl+Shift+M; link menu items are optional in Preferences |
+| Trash / permanent delete | Delete / Shift+Delete with native confirmation |
+| Undo / Redo | Ctrl+Z / Ctrl+Shift+Z for supported operations |
+| Properties / directory Properties | Alt+Enter / background context menu |
+| Compress / Extract | Native context menu and destination chooser |
+| Open directory in Console | Ctrl+Period when the Console provider is available |
+
+Conflict, error, permission, cancellation and Trash availability follow Nautilus's native behavior. The current host lacks Console (`kgx`); its private provider contract has development coverage. Extension/OpenPGP and drag-and-drop acceptance remain open. See [operation evidence and limitations](docs/miller/operations-verification.md) for actual tested workflows; these development changes have not replaced the installed RPM.
+
 ## Build and run on Fedora 44
 
 ```sh
@@ -65,9 +84,9 @@ python3 tools/miller/with-test-session.py -- python3 tools/miller/with-test-home
 python3 test/miller/test-preview-io.py
 ```
 
-These are focused checks. GUI tests use a private bus/compositor, disposable XDG directories and a mounted disposable Home while leaving `HOME` unchanged. Do not run legacy filesystem tests against the operator’s Home. See [input/testing procedures](docs/miller/input-testing.md) and the [acceptance ledger](docs/miller/acceptance.md) for full regression evidence and remaining gates. Current operation tests exercise Nautilus’s existing transfer API; genuine clipboard and drag acceptance remains required.
+These are focused checks. GUI tests use a private bus/compositor, disposable XDG directories and a mounted disposable Home while leaving `HOME` unchanged. Do not run legacy filesystem tests against the operator’s Home. See [input/testing procedures](docs/miller/input-testing.md) and the [acceptance ledger](docs/miller/acceptance.md) for full regression evidence and remaining gates. Operation tests now include genuine clipboard input, an independent GTK source, native dialogs/conflicts, and real Trash/restore in a normal application child. Actual drag-and-drop, extension/OpenPGP and release acceptance remain required; see [operation evidence](docs/miller/operations-verification.md).
 
-The inherited `test-portal-file-chooser` has a render/response timeout on this host, also reproduced with the unchanged upstream baseline. See `docs/miller/verification.md` for the actual results and deployment record.
+Historical runs recorded a `test-portal-file-chooser` render/response timeout, also reproduced with the unchanged upstream baseline. Fresh isolated regression suites pass that smoke test; the original failure remains in [verification](docs/miller/verification.md), and release portal acceptance is still tracked separately.
 
 ## Source and maintenance
 

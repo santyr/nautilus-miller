@@ -6,9 +6,15 @@
 #include <sys/stat.h>
 #include <sys/statvfs.h>
 #include <math.h>
+#include <gio/gdesktopappinfo.h>
 #include "miller-test-input.h"
 #include "nautilus-application.h"
+#include "nautilus-app-chooser.h"
+#include "nautilus-batch-rename-dialog.h"
 #include "nautilus-clipboard.h"
+#include "nautilus-compress-dialog.h"
+#include "nautilus-dbus-launcher.h"
+#include "nautilus-file-operations.h"
 #include "nautilus-file.h"
 #include "nautilus-file-utilities.h"
 #include "nautilus-file-undo-manager.h"
@@ -35,9 +41,15 @@ typedef struct
     GFile *root, *source_dir, *source_file, *parent, *child, *sibling;
     NautilusProgressInfoManager *manager;
     GPtrArray *jobs;
+    GSubprocess *receiver;
+    GDataInputStream *receiver_output;
     guint view_id;
     guint paste_keys, paste_actions;
 } OperationFixture;
+
+static void test_native_multi_rename (OperationFixture *f, gconstpointer unused);
+static void operations_stop_receiver (OperationFixture *f);
+static void operations_prepare_templates (void);
 
 static MillerTestInput *input;
 static const char payload[] = "Native clipboard payload: 雪\n";
@@ -450,6 +462,7 @@ operations_setup (OperationFixture *f, gconstpointer view_id)
 static void
 operations_teardown (OperationFixture *f, gconstpointer unused)
 {
+    operations_stop_receiver (f);
     operations_settle (f);
     gdk_clipboard_set_content (gtk_widget_get_clipboard (f->window), NULL);
     gtk_window_destroy (GTK_WINDOW (f->window)); operations_pump (100);
@@ -1483,13 +1496,14 @@ operations_assert_private_trash_bytes (GFile *file)
  * delete confirmations in GLib tests. This normal app child exercises the
  * actual policy, with the same owned compositor/Home and native controls. */
 static int
-operations_deletion_child_main (const char *kind)
+operations_native_child_main (const char *kind)
 {
     g_assert_false (g_test_initialized ());
     g_setenv ("GDK_DEBUG", "no-portals", TRUE);
     g_autoptr (GError) error = NULL;
     input = miller_test_input_new (&error); g_assert_no_error (error);
     operations_assert_private_home ();
+    operations_prepare_templates ();
     nautilus_register_resource (); nautilus_global_preferences_init (); nautilus_ensure_extension_points ();
     g_autoptr (NautilusTagManager) tags = nautilus_tag_manager_new_dummy ();
     test_init_config_dir ();
@@ -1502,7 +1516,11 @@ operations_deletion_child_main (const char *kind)
     operations_setup (f, GUINT_TO_POINTER (NAUTILUS_VIEW_MILLER_ID));
     NautilusFilesView *source = operations_view_for_directory (f, f->source_dir);
     operations_select (f, source, f->source_file); operations_assert_focus (f, source);
-    if (g_str_equal (kind, "permanent-delete-confirmation"))
+    if (g_str_equal (kind, "multi-rename-captured-selection"))
+    {
+        test_native_multi_rename (f, NULL);
+    }
+    else if (g_str_equal (kind, "permanent-delete-confirmation"))
     {
         operations_shift_delete ();
         g_autoptr (AdwDialog) cancel = operations_wait_alert (f);
@@ -1591,14 +1609,18 @@ operations_deletion_child_main (const char *kind)
         g_assert_false (g_file_query_exists (local_trashed, NULL));
         operations_assert_sentinels (f);
     }
-    g_assert_cmpuint (f->jobs->len, >=, g_str_equal (kind, "trash-unavailable") ? 1 : 2);
+    if (!g_str_equal (kind, "multi-rename-captured-selection"))
+    {
+        g_assert_cmpuint (f->jobs->len, >=, g_str_equal (kind, "trash-unavailable") ? 1 : 2);
+    }
     for (guint i = 0; i < f->jobs->len; i++)
     {
         g_assert_true (nautilus_progress_info_get_is_finished (f->jobs->pdata[i]));
     }
     operations_teardown (f, NULL);
     g_main_context_release (context); g_clear_pointer (&input, miller_test_input_free);
-    g_print ("Native deletion acceptance: %s PASS\n", kind);
+    g_print ("Native %s acceptance: %s PASS\n",
+             g_str_equal (kind, "multi-rename-captured-selection") ? "operation" : "deletion", kind);
     return 0;
 }
 
@@ -1613,14 +1635,14 @@ operations_child_finished (GObject *source, GAsyncResult *result, gpointer data)
 }
 
 static void
-test_native_deletion_child (OperationFixture *f, gconstpointer unused)
+test_native_operation_child (OperationFixture *f, gconstpointer unused)
 {
     const char *kind = strrchr (g_test_get_path (), '/') + 1;
     g_autofree char *executable = g_file_read_link ("/proc/self/exe", NULL);
     g_assert_nonnull (executable);
     g_autoptr (GError) error = NULL;
     g_autoptr (GSubprocess) child = g_subprocess_new (G_SUBPROCESS_FLAGS_NONE, &error,
-        executable, "--native-deletion", kind, NULL);
+        executable, "--native-operation", kind, NULL);
     g_assert_no_error (error); g_assert_nonnull (child);
     OperationChildWait wait = { 0 };
     g_subprocess_wait_check_async (child, NULL, operations_child_finished, &wait);
@@ -1635,6 +1657,649 @@ test_native_deletion_child (OperationFixture *f, gconstpointer unused)
     operations_assert_bytes (f, f->source_file, payload); operations_assert_sentinels (f);
 }
 
+/* Native archive extraction is supplementary verification of bytes created by
+ * the real Compress dialog, not acceptance of a user Extract gesture. The
+ * tiny fixture has one member; enumerate only this owned verification tree. */
+static void
+operations_verify_archive (OperationFixture *f, GFile *archive,
+                           const char *member, const char *contents)
+{
+    operations_owned (f, archive);
+    g_autoptr (GFile) output = g_file_get_child (f->root, "verify-archive");
+    operations_owned (f, output); g_assert_true (g_file_make_directory (output, NULL, NULL));
+    GList files = { .data = archive };
+    nautilus_file_operations_extract_files (&files, output, GTK_WINDOW (f->window), NULL, NULL, NULL);
+    operations_settle (f);
+    g_autoptr (GPtrArray) directories = g_ptr_array_new_with_free_func (g_object_unref);
+    g_ptr_array_add (directories, g_object_ref (output));
+    guint members = 0, entries = 0;
+    for (guint i = 0; i < directories->len; i++)
+    {
+        g_autoptr (GFileEnumerator) enumerator = g_file_enumerate_children (directories->pdata[i],
+            G_FILE_ATTRIBUTE_STANDARD_NAME "," G_FILE_ATTRIBUTE_STANDARD_TYPE,
+            G_FILE_QUERY_INFO_NOFOLLOW_SYMLINKS, NULL, NULL);
+        g_assert_nonnull (enumerator);
+        g_autoptr (GFileInfo) info = NULL;
+        while ((info = g_file_enumerator_next_file (enumerator, NULL, NULL)) != NULL)
+        {
+            g_assert_cmpuint (++entries, <=, 8);
+            GFile *file = g_file_get_child (directories->pdata[i], g_file_info_get_name (info));
+            operations_owned (f, file);
+            if (g_file_info_get_file_type (info) == G_FILE_TYPE_DIRECTORY) { g_ptr_array_add (directories, file); }
+            else
+            {
+                g_assert_cmpint (g_file_info_get_file_type (info), ==, G_FILE_TYPE_REGULAR);
+                g_assert_cmpstr (g_file_info_get_name (info), ==, member);
+                operations_assert_bytes (f, file, contents); members++; g_object_unref (file);
+            }
+            g_clear_object (&info);
+        }
+    }
+    g_assert_cmpuint (members, ==, 1);
+}
+
+static void
+test_native_compress (OperationFixture *f, gconstpointer unused)
+{
+    gboolean pruned = strstr (g_test_get_path (), "source-pruned") != NULL;
+    gboolean cancel = g_str_has_suffix (g_test_get_path (), "-cancel");
+    g_settings_set_enum (nautilus_compression_preferences,
+                         NAUTILUS_PREFERENCES_DEFAULT_COMPRESSION_FORMAT, NAUTILUS_COMPRESSION_ZIP);
+    NautilusFilesView *source;
+    if (pruned)
+    {
+        source = operations_view_for_directory (f, f->source_dir);
+        operations_select (f, source, f->source_file);
+    }
+    else { source = operations_open_parent (f); }
+    operations_key (GDK_KEY_Menu); operations_activate_menu_label (source, "Compress…");
+    AdwDialog *dialog = adw_application_window_get_visible_dialog (ADW_APPLICATION_WINDOW (f->window));
+    g_assert_true (NAUTILUS_IS_COMPRESS_DIALOG (dialog));
+    GtkWidget *entry = operations_find_type (GTK_WIDGET (dialog), ADW_TYPE_ENTRY_ROW);
+    g_assert_nonnull (entry);
+    gtk_widget_grab_focus (entry); operations_chord (GDK_KEY_a, FALSE); operations_type ("archive");
+    GWeakRef weak; g_weak_ref_init (&weak, source);
+    g_autoptr (GFile) directory = g_object_ref (f->parent);
+    if (pruned)
+    {
+        nautilus_window_open_location_full (NAUTILUS_WINDOW (f->window), f->sibling, 0, NULL);
+        operations_settle (f);
+        g_clear_object (&directory); directory = g_file_get_child (f->root, "moved-compress-source");
+        operations_owned (f, directory); operations_owned (f, f->source_dir);
+        g_assert_true (g_file_move (f->source_dir, directory, G_FILE_COPY_NONE, NULL, NULL, NULL, NULL));
+        operations_pump (300);
+        g_autoptr (GtkWidget) retained = g_weak_ref_get (&weak);
+        g_test_message ("Compress source after actual branch prune retained=%d", retained != NULL);
+    }
+    operations_press_button (GTK_WIDGET (dialog), cancel ? "Cancel" : "Compress");
+    operations_settle (f);
+    g_autoptr (GFile) archive = g_file_get_child (directory, "archive.zip");
+    if (cancel)
+    {
+        g_assert_false (g_file_query_exists (archive, NULL)); g_assert_cmpuint (f->jobs->len, ==, 0);
+    }
+    else
+    {
+        g_assert_true (g_file_query_exists (archive, NULL));
+        g_autofree char *member = pruned ? g_file_get_basename (f->source_file) : g_strdup ("child-sentinel.txt");
+        operations_verify_archive (f, archive, member, pruned ? payload : "child unchanged");
+    }
+    operations_assert_sentinels (f);
+    g_autoptr (GFile) wrong = g_file_get_child (pruned ? f->sibling : f->child, "archive.zip");
+    g_assert_false (g_file_query_exists (wrong, NULL));
+    if (pruned)
+    {
+        gint64 deadline = g_get_monotonic_time () + 8 * G_TIME_SPAN_SECOND;
+        for (;;)
+        {
+            g_autoptr (GtkWidget) retained = g_weak_ref_get (&weak);
+            if (retained == NULL) { break; }
+            g_assert_cmpint (g_get_monotonic_time (), <, deadline); operations_pump (10);
+        }
+        operations_assert_focus (f, operations_view_for_directory (f, f->sibling));
+    }
+    else { operations_assert_focus (f, source); }
+    g_weak_ref_clear (&weak);
+}
+
+static void
+test_native_extract (OperationFixture *f, gconstpointer unused)
+{
+    gboolean pruned = strstr (g_test_get_path (), "source-pruned") != NULL;
+    gboolean cancel = g_str_has_suffix (g_test_get_path (), "-cancel");
+    g_autoptr (GFile) archive = g_file_get_child (f->source_dir, "input.zip");
+    operations_owned (f, archive);
+    /* Create only the archive fixture through the existing native worker.
+     * Actual extraction below enters through its menu and real chooser. */
+    GList files = { .data = f->source_file };
+    nautilus_file_operations_compress (&files, archive, AUTOAR_FORMAT_ZIP, AUTOAR_FILTER_NONE,
+                                       NULL, GTK_WINDOW (f->window), NULL, NULL, NULL);
+    operations_settle (f); g_assert_true (g_file_query_exists (archive, NULL));
+    NautilusFilesView *source = operations_view_for_directory (f, f->source_dir);
+    operations_select (f, source, archive);
+    operations_key (GDK_KEY_Menu);
+    if (g_str_has_suffix (g_test_get_path (), "extract-here"))
+    {
+        operations_activate_menu_label (source, "Extract"); operations_settle (f);
+        g_autoptr (GFile) output = g_file_get_child (f->source_dir, "input");
+        g_autofree char *name = g_file_get_basename (f->source_file);
+        g_autoptr (GFile) member = g_file_get_child (output, name);
+        operations_wait_file (f, source, output); operations_assert_bytes (f, member, payload);
+        operations_assert_bytes (f, f->source_file, payload); operations_assert_sentinels (f);
+        g_autoptr (GFile) wrong = g_file_get_child (f->parent, "input");
+        g_assert_false (g_file_query_exists (wrong, NULL));
+        g_assert_cmpuint (f->jobs->len, ==, 2); operations_assert_focus (f, source);
+        return;
+    }
+    operations_activate_menu_label (source, "Extract to…");
+    g_autoptr (GtkWidget) chooser = operations_wait_window (f, GTK_TYPE_FILE_CHOOSER_DIALOG);
+    GWeakRef weak; g_weak_ref_init (&weak, source);
+    g_autoptr (GFile) moved = NULL;
+    if (pruned)
+    {
+        nautilus_window_open_location_full (NAUTILUS_WINDOW (f->window), f->sibling, 0, NULL);
+        operations_settle (f);
+        moved = g_file_get_child (f->root, "moved-extract-source");
+        operations_owned (f, moved); operations_owned (f, f->source_dir);
+        g_assert_true (g_file_move (f->source_dir, moved, G_FILE_COPY_NONE, NULL, NULL, NULL, NULL));
+        operations_pump (300);
+        g_autoptr (GtkWidget) retained = g_weak_ref_get (&weak);
+        g_test_message ("Extract To source after real branch prune retained=%d", retained != NULL);
+    }
+    else
+    {
+        /* Keep the source tab alive while a different parent/action owner
+         * discloses its child. Only the chosen parent may receive contents. */
+        operations_new_tab_at (f, f->parent);
+        operations_select (f, operations_view_for_directory (f, f->parent), f->child);
+    }
+    if (cancel) { operations_key (GDK_KEY_Escape); }
+    else { operations_accept_folder (chooser, f->parent); }
+    operations_settle (f);
+    g_autofree char *name = g_file_get_basename (f->source_file);
+    g_autoptr (GFile) extracted_root = g_file_get_child (f->parent, "input");
+    g_autoptr (GFile) extracted = g_file_get_child (extracted_root, name);
+    if (cancel)
+    {
+        g_assert_false (g_file_query_exists (extracted_root, NULL)); g_assert_cmpuint (f->jobs->len, ==, 1);
+    }
+    else
+    {
+        operations_assert_bytes (f, extracted, payload);
+        g_assert_cmpuint (f->jobs->len, ==, 2);
+        if (!pruned) { operations_wait_file (f, operations_view_for_directory (f, f->parent), extracted_root); }
+    }
+    g_autoptr (GFile) wrong_child = g_file_get_child (f->child, "input");
+    g_autoptr (GFile) wrong_sibling = g_file_get_child (f->sibling, "input");
+    g_assert_false (g_file_query_exists (wrong_child, NULL));
+    g_assert_false (g_file_query_exists (wrong_sibling, NULL));
+    g_autoptr (GFile) original = pruned ? g_file_get_child (moved, name) : g_object_ref (f->source_file);
+    operations_assert_bytes (f, original, payload); operations_assert_sentinels (f);
+    if (pruned)
+    {
+        gint64 deadline = g_get_monotonic_time () + 8 * G_TIME_SPAN_SECOND;
+        for (;;)
+        {
+            g_autoptr (GtkWidget) retained = g_weak_ref_get (&weak);
+            if (retained == NULL) { break; }
+            g_assert_cmpint (g_get_monotonic_time (), <, deadline); operations_pump (10);
+        }
+    }
+    operations_assert_focus (f, operations_view_for_directory (f, pruned ? f->sibling : f->parent));
+    g_weak_ref_clear (&weak);
+}
+
+static void
+test_native_link (OperationFixture *f, gconstpointer unused)
+{
+    gboolean in_place = g_str_has_suffix (g_test_get_path (), "in-place-supported");
+    g_settings_set_boolean (nautilus_preferences, NAUTILUS_PREFERENCES_SHOW_CREATE_LINK, TRUE);
+    operations_copy_source (f, FALSE);
+    NautilusFilesView *view = in_place ? operations_view_for_directory (f, f->source_dir) : operations_open_parent (f);
+    operations_chord (GDK_KEY_m, in_place);
+    operations_settle (f);
+    GFile *directory = in_place ? f->source_dir : f->parent;
+    g_autoptr (GFileEnumerator) enumerator = g_file_enumerate_children (directory,
+        G_FILE_ATTRIBUTE_STANDARD_NAME "," G_FILE_ATTRIBUTE_STANDARD_IS_SYMLINK "," G_FILE_ATTRIBUTE_STANDARD_SYMLINK_TARGET,
+        G_FILE_QUERY_INFO_NOFOLLOW_SYMLINKS, NULL, NULL);
+    g_assert_nonnull (enumerator);
+    guint count = 0;
+    g_autoptr (GFileInfo) info = NULL;
+    while ((info = g_file_enumerator_next_file (enumerator, NULL, NULL)) != NULL)
+    {
+        if (g_file_info_get_is_symlink (info))
+        {
+            g_autoptr (GFile) link = g_file_get_child (directory, g_file_info_get_name (info));
+            operations_owned (f, link);
+            const char *target = g_file_info_get_symlink_target (info);
+            g_assert_nonnull (target);
+            g_autoptr (GFile) resolved = g_path_is_absolute (target) ? g_file_new_for_path (target) :
+                                       g_file_resolve_relative_path (directory, target);
+            g_assert_true (g_file_equal (resolved, f->source_file));
+            operations_assert_bytes (f, link, payload); operations_wait_file (f, view, link);
+            g_autoptr (GFile) wrong = g_file_get_child (f->child, g_file_info_get_name (info));
+            g_assert_false (g_file_query_exists (wrong, NULL));
+            g_autoptr (GFile) sibling = g_file_get_child (f->sibling, g_file_info_get_name (info));
+            g_assert_false (g_file_query_exists (sibling, NULL)); count++;
+        }
+        g_clear_object (&info);
+    }
+    g_assert_cmpuint (count, ==, 1); g_assert_cmpuint (f->jobs->len, ==, 1);
+    operations_assert_bytes (f, f->source_file, payload);
+    operations_assert_sentinels (f); operations_assert_focus (f, view);
+}
+
+static GtkWidget *
+operations_focused_entry (OperationFixture *f)
+{
+    GtkWidget *focus = gtk_root_get_focus (GTK_ROOT (f->window));
+    g_assert_nonnull (focus);
+    GtkWidget *entry = GTK_IS_ENTRY (focus) ? focus : gtk_widget_get_ancestor (focus, GTK_TYPE_ENTRY);
+    g_assert_nonnull (entry); return entry;
+}
+
+static void
+test_native_multi_rename (OperationFixture *f, gconstpointer unused)
+{
+    g_autoptr (GFile) first = g_file_get_child (f->source_dir, "old-one.txt");
+    g_autoptr (GFile) second = g_file_get_child (f->source_dir, "old-two.txt");
+    operations_owned (f, first); operations_owned (f, second);
+    g_assert_true (g_file_replace_contents (first, "first member", 12, NULL, FALSE, 0, NULL, NULL, NULL));
+    g_assert_true (g_file_replace_contents (second, "second member", 13, NULL, FALSE, 0, NULL, NULL, NULL));
+    NautilusFilesView *source = operations_view_for_directory (f, f->source_dir);
+    operations_select (f, source, first); operations_select (f, source, second);
+    g_autoptr (NautilusFile) one = nautilus_file_get (first);
+    g_autoptr (NautilusFile) two = nautilus_file_get (second);
+    GList tail = { .data = two }; GList head = { .data = one, .next = &tail }; tail.prev = &head;
+    nautilus_files_view_set_selection (source, &head, FALSE); operations_settle (f);
+    operations_key (GDK_KEY_F2);
+    AdwDialog *dialog = adw_application_window_get_visible_dialog (ADW_APPLICATION_WINDOW (f->window));
+    g_assert_true (NAUTILUS_IS_BATCH_RENAME_DIALOG (dialog));
+    GtkWidget *label = operations_find_label (GTK_WIDGET (dialog), "Find and replace text");
+    g_assert_nonnull (label);
+    GtkWidget *check = gtk_widget_get_ancestor (label, GTK_TYPE_CHECK_BUTTON);
+    g_assert_nonnull (check); gtk_widget_grab_focus (check); operations_key (GDK_KEY_space);
+    g_assert_true (gtk_check_button_get_active (GTK_CHECK_BUTTON (check)));
+    GtkWidget *find = operations_focused_entry (f);
+    operations_type ("old"); g_assert_cmpstr (gtk_editable_get_text (GTK_EDITABLE (find)), ==, "old");
+    operations_key (GDK_KEY_Tab);
+    GtkWidget *replace = operations_focused_entry (f); g_assert_true (replace != find);
+    operations_type ("new"); g_assert_cmpstr (gtk_editable_get_text (GTK_EDITABLE (replace)), ==, "new");
+    /* A native API tab change cannot retarget the batch captured by F2. */
+    operations_new_tab_at (f, f->sibling);
+    operations_press_button (GTK_WIDGET (dialog), "Rename");
+    g_autoptr (GFile) renamed_one = g_file_get_child (f->source_dir, "new-one.txt");
+    g_autoptr (GFile) renamed_two = g_file_get_child (f->source_dir, "new-two.txt");
+    operations_wait_file (f, source, renamed_one); operations_wait_file (f, source, renamed_two);
+    operations_settle (f);
+    operations_assert_bytes (f, renamed_one, "first member");
+    operations_assert_bytes (f, renamed_two, "second member");
+    g_assert_false (g_file_query_exists (first, NULL)); g_assert_false (g_file_query_exists (second, NULL));
+    g_autoptr (GFile) wrong_one = g_file_get_child (f->sibling, "new-one.txt");
+    g_autoptr (GFile) wrong_two = g_file_get_child (f->sibling, "new-two.txt");
+    g_assert_false (g_file_query_exists (wrong_one, NULL)); g_assert_false (g_file_query_exists (wrong_two, NULL));
+    operations_assert_bytes (f, f->source_file, payload); operations_assert_sentinels (f);
+    operations_assert_focus (f, operations_view_for_directory (f, f->sibling));
+}
+
+#define OWNED_RECEIVER_ID "org.example.MillerOwnedReceiver"
+
+typedef struct { GFile *root; guint calls; gboolean directory; } OperationReceiver;
+
+static void
+operations_receiver_open (GApplication *app, GFile **files, gint count,
+                           const char *hint, OperationReceiver *receiver)
+{
+    g_assert_cmpint (count, >, 0); g_assert_cmpint (count, <=, 8);
+    g_autoptr (GKeyFile) record = g_key_file_new ();
+    g_auto (GStrv) uris = g_new0 (char *, count + 1);
+    for (gint i = 0; i < count; i++)
+    {
+        g_assert_true (g_file_has_prefix (files[i], receiver->root));
+        g_autoptr (GFileInfo) info = g_file_query_info (files[i],
+            G_FILE_ATTRIBUTE_STANDARD_TYPE "," G_FILE_ATTRIBUTE_UNIX_UID,
+            G_FILE_QUERY_INFO_NOFOLLOW_SYMLINKS, NULL, NULL);
+        g_assert_nonnull (info);
+        g_assert_cmpint (g_file_info_get_file_type (info), ==, receiver->directory ? G_FILE_TYPE_DIRECTORY : G_FILE_TYPE_REGULAR);
+        g_assert_cmpuint (g_file_info_get_attribute_uint32 (info, G_FILE_ATTRIBUTE_UNIX_UID), ==, geteuid ());
+        uris[i] = g_file_get_uri (files[i]);
+    }
+    g_key_file_set_string_list (record, "Open", "uris", (const char * const *) uris, count);
+    g_autofree char *name = g_strdup_printf ("open-receipt-%u.ini", ++receiver->calls);
+    g_autoptr (GFile) target = g_file_get_child (receiver->root, name);
+    gsize length; g_autofree char *text = g_key_file_to_data (record, &length, NULL);
+    g_assert_true (g_file_replace_contents (target, text, length, NULL, FALSE,
+                                           G_FILE_CREATE_PRIVATE, NULL, NULL, NULL));
+}
+
+static int
+operations_receiver_main (const char *root_path, gboolean console)
+{
+    g_autoptr (GError) error = NULL;
+    g_autoptr (MillerTestInput) proof = miller_test_input_new (&error);
+    g_assert_no_error (error); g_assert_nonnull (proof); operations_assert_private_home ();
+    struct stat info; g_assert_cmpint (lstat (root_path, &info), ==, 0);
+    g_assert_true (S_ISDIR (info.st_mode)); g_assert_cmpuint (info.st_uid, ==, geteuid ());
+    g_assert_cmpuint (info.st_mode & 0777, ==, 0700);
+    g_autoptr (GFile) root = g_file_new_for_path (root_path);
+    g_autoptr (GFile) temporary = g_file_new_for_path (g_get_tmp_dir ());
+    g_assert_true (g_file_has_prefix (root, temporary));
+    OperationReceiver receiver = { .root = root, .directory = console };
+    g_autoptr (GApplication) app = g_application_new (console ? "org.gnome.Console" : OWNED_RECEIVER_ID,
+        G_APPLICATION_HANDLES_OPEN | G_APPLICATION_IS_SERVICE);
+    g_signal_connect (app, "open", G_CALLBACK (operations_receiver_open), &receiver);
+    g_assert_true (g_application_register (app, NULL, &error)); g_assert_no_error (error);
+    g_autoptr (GMainLoop) loop = g_main_loop_new (NULL, FALSE);
+    g_unix_fd_add (STDIN_FILENO, G_IO_IN | G_IO_HUP, clipboard_child_quit, loop);
+    g_print ("ready\n"); g_main_loop_run (loop);
+    return 0;
+}
+
+static void
+operations_start_receiver (OperationFixture *f, gboolean console)
+{
+    operations_assert_private_home ();
+    if (!console)
+    {
+        g_autofree char *applications = g_build_filename (g_get_user_data_dir (), "applications", NULL);
+        g_assert_cmpint (g_mkdir_with_parents (applications, 0700), ==, 0);
+        g_autofree char *desktop = g_build_filename (applications, OWNED_RECEIVER_ID ".desktop", NULL);
+        const char entry[] = "[Desktop Entry]\nType=Application\nName=Owned file receiver\n"
+            "Exec=/usr/bin/false %U\nDBusActivatable=true\nTerminal=false\n"
+            "MimeType=text/plain;\nNoDisplay=false\n";
+        g_assert_true (g_file_set_contents (desktop, entry, -1, NULL));
+        g_autoptr (GDesktopAppInfo) app = g_desktop_app_info_new_from_filename (desktop);
+        g_assert_nonnull (app); g_assert_true (g_app_info_set_as_default_for_type (G_APP_INFO (app), "text/plain", NULL));
+        g_autoptr (GAppInfo) selected = g_app_info_get_default_for_type ("text/plain", FALSE);
+        g_assert_nonnull (selected); g_assert_true (g_app_info_equal (selected, G_APP_INFO (app)));
+    }
+    g_autofree char *executable = g_file_read_link ("/proc/self/exe", NULL);
+    g_autofree char *path = g_file_get_path (f->root);
+    f->receiver = g_subprocess_new (G_SUBPROCESS_FLAGS_STDIN_PIPE | G_SUBPROCESS_FLAGS_STDOUT_PIPE,
+        NULL, executable, console ? "--console-receiver" : "--open-receiver", path, NULL);
+    g_assert_nonnull (f->receiver);
+    f->receiver_output = g_data_input_stream_new (g_subprocess_get_stdout_pipe (f->receiver));
+    operations_child_marker (f->receiver_output, "ready");
+}
+
+static void
+operations_stop_receiver (OperationFixture *f)
+{
+    if (f->receiver == NULL) { return; }
+    g_assert_true (g_output_stream_close (g_subprocess_get_stdin_pipe (f->receiver), NULL, NULL));
+    gboolean exited = FALSE;
+    g_subprocess_wait_check_async (f->receiver, NULL, operations_child_exited, &exited);
+    gint64 deadline = g_get_monotonic_time () + 8 * G_TIME_SPAN_SECOND;
+    while (!exited)
+    {
+        g_assert_cmpint (g_get_monotonic_time (), <, deadline); operations_pump (10);
+    }
+    g_clear_object (&f->receiver_output); g_clear_object (&f->receiver);
+}
+
+static void
+operations_assert_open_receipt (OperationFixture *f, GFile *expected_file)
+{
+    g_autoptr (GFile) receipt = g_file_get_child (f->root, "open-receipt-1.ini");
+    operations_owned (f, receipt);
+    gint64 deadline = g_get_monotonic_time () + 10 * G_TIME_SPAN_SECOND;
+    while (!g_file_query_exists (receipt, NULL))
+    {
+        g_assert_cmpint (g_get_monotonic_time (), <, deadline); operations_pump (10);
+    }
+    g_autofree char *contents = NULL;
+    g_assert_true (g_file_load_contents (receipt, NULL, &contents, NULL, NULL, NULL));
+    g_autoptr (GKeyFile) record = g_key_file_new ();
+    g_assert_true (g_key_file_load_from_data (record, contents, -1, 0, NULL));
+    gsize count; g_auto (GStrv) uris = g_key_file_get_string_list (record, "Open", "uris", &count, NULL);
+    g_assert_cmpuint (count, ==, 1);
+    g_autofree char *expected = g_file_get_uri (expected_file);
+    g_assert_cmpstr (uris[0], ==, expected);
+    /* Drain queued native activation work before checking duplicate launch. */
+    operations_pump (500);
+    g_autoptr (GFile) duplicate = g_file_get_child (f->root, "open-receipt-2.ini");
+    g_assert_false (g_file_query_exists (duplicate, NULL));
+}
+
+static void
+test_native_open (OperationFixture *f, gconstpointer unused)
+{
+    gboolean chooser = g_str_has_suffix (g_test_get_path (), "open-with-captured-selection");
+    g_autoptr (GFile) hostile = g_file_get_child (f->source_dir, "quote' $(never-run); 雪.txt");
+    operations_owned (f, hostile);
+    g_assert_true (g_file_move (f->source_file, hostile, G_FILE_COPY_NONE, NULL, NULL, NULL, NULL));
+    g_set_object (&f->source_file, hostile);
+    operations_start_receiver (f, FALSE);
+    NautilusFilesView *source = operations_view_for_directory (f, f->source_dir);
+    operations_select (f, source, f->source_file); operations_assert_focus (f, source);
+    if (chooser)
+    {
+        operations_key (GDK_KEY_Menu); operations_activate_menu_label (source, "Open With…");
+        AdwDialog *dialog = adw_application_window_get_visible_dialog (ADW_APPLICATION_WINDOW (f->window));
+        g_assert_true (NAUTILUS_IS_APP_CHOOSER (dialog));
+        GtkWidget *label; gint64 deadline = g_get_monotonic_time () + 8 * G_TIME_SPAN_SECOND;
+        while ((label = operations_find_label (GTK_WIDGET (dialog), "Owned file receiver")) == NULL)
+        {
+            g_assert_cmpint (g_get_monotonic_time (), <, deadline); operations_pump (10);
+        }
+        operations_click (f, label, 272);
+        g_autoptr (GAppInfo) selected = nautilus_app_chooser_get_app_info (NAUTILUS_APP_CHOOSER (dialog));
+        g_assert_nonnull (selected); g_assert_cmpstr (g_app_info_get_id (selected), ==, OWNED_RECEIVER_ID ".desktop");
+        operations_new_tab_at (f, f->sibling);
+        operations_press_button (GTK_WIDGET (dialog), "Open");
+    }
+    else { operations_key (GDK_KEY_Return); }
+    operations_assert_open_receipt (f, f->source_file); operations_settle (f);
+    operations_assert_bytes (f, f->source_file, payload); operations_assert_sentinels (f);
+    operations_assert_focus (f, chooser ? operations_view_for_directory (f, f->sibling) : source);
+}
+
+static void
+operations_reload_bus_services (void)
+{
+    g_autoptr (GDBusConnection) bus = g_bus_get_sync (G_BUS_TYPE_SESSION, NULL, NULL);
+    g_assert_nonnull (bus);
+    g_autoptr (GError) error = NULL;
+    g_autoptr (GVariant) reply = g_dbus_connection_call_sync (bus, "org.freedesktop.DBus",
+        "/org/freedesktop/DBus", "org.freedesktop.DBus", "ReloadConfig", NULL, NULL,
+        G_DBUS_CALL_FLAGS_NONE, 5000, NULL, &error);
+    g_assert_no_error (error); g_assert_nonnull (reply); operations_pump (100);
+}
+
+static void
+test_native_terminal (OperationFixture *f, gconstpointer unused)
+{
+    operations_assert_private_home ();
+    NautilusDBusLauncher *launcher = nautilus_dbus_launcher_get ();
+    g_assert_nonnull (launcher);
+    /* This host has no Console provider. Assert native unavailability before
+     * exposing a controlled provider on the proved-private session bus. */
+    g_assert_false (nautilus_dbus_launcher_is_available (launcher, NAUTILUS_DBUS_LAUNCHER_CONSOLE));
+    g_autofree char *services = g_build_filename (g_get_user_data_dir (), "dbus-1", "services", NULL);
+    g_assert_cmpint (g_mkdir_with_parents (services, 0700), ==, 0);
+    g_autofree char *service_path = g_build_filename (services, "org.gnome.Console.service", NULL);
+    g_autoptr (GFile) service = g_file_new_for_path (service_path);
+    const char record[] = "[D-BUS Service]\nName=org.gnome.Console\nExec=/usr/bin/false\n";
+    g_assert_true (g_file_replace_contents (service, record, strlen (record), NULL, FALSE,
+                                           G_FILE_CREATE_PRIVATE, NULL, NULL, NULL));
+    operations_start_receiver (f, TRUE); operations_reload_bus_services ();
+    gint64 deadline = g_get_monotonic_time () + 8 * G_TIME_SPAN_SECOND;
+    while (!nautilus_dbus_launcher_is_available (launcher, NAUTILUS_DBUS_LAUNCHER_CONSOLE))
+    {
+        g_assert_cmpint (g_get_monotonic_time (), <, deadline); operations_pump (10);
+    }
+    NautilusFilesView *parent = operations_open_parent (f);
+    GActionGroup *actions = nautilus_files_view_get_private_action_group (parent);
+    g_assert_true (g_action_group_get_action_enabled (actions, "current-directory-console"));
+    guint history = g_list_length (nautilus_window_slot_get_back_history (f->slot));
+    operations_chord (GDK_KEY_period, FALSE);
+    operations_assert_open_receipt (f, f->parent);
+    g_assert_cmpuint (g_list_length (nautilus_window_slot_get_back_history (f->slot)), ==, history);
+    operations_assert_bytes (f, f->source_file, payload); operations_assert_sentinels (f);
+    operations_assert_focus (f, parent);
+    operations_stop_receiver (f); g_assert_true (g_file_delete (service, NULL, NULL));
+    operations_reload_bus_services ();
+    deadline = g_get_monotonic_time () + 8 * G_TIME_SPAN_SECOND;
+    while (nautilus_dbus_launcher_is_available (launcher, NAUTILUS_DBUS_LAUNCHER_CONSOLE))
+    {
+        g_assert_cmpint (g_get_monotonic_time (), <, deadline); operations_pump (10);
+    }
+    nautilus_files_view_set_selection (parent, NULL, FALSE);
+    operations_select (f, parent, f->child);
+    g_assert_false (g_action_group_get_action_enabled (actions, "current-directory-console"));
+}
+
+static AdwDialog *
+operations_wait_dialog_label (OperationFixture *f, const char *text)
+{
+    gint64 deadline = g_get_monotonic_time () + 10 * G_TIME_SPAN_SECOND;
+    for (;;)
+    {
+        AdwDialog *dialog = adw_application_window_get_visible_dialog (ADW_APPLICATION_WINDOW (f->window));
+        if (dialog != NULL && operations_find_label (GTK_WIDGET (dialog), text) != NULL) { return g_object_ref (dialog); }
+        g_assert_cmpint (g_get_monotonic_time (), <, deadline); operations_pump (10);
+    }
+}
+
+static void
+operations_alt_return (void)
+{
+    g_autoptr (GError) error = NULL;
+    g_assert_true (miller_test_input_key (input, GDK_KEY_Alt_L, TRUE, &error));
+    operations_key (GDK_KEY_Return);
+    g_assert_true (miller_test_input_key (input, GDK_KEY_Alt_L, FALSE, &error));
+    g_assert_no_error (error); operations_pump (60);
+}
+
+static void
+test_native_properties (OperationFixture *f, gconstpointer unused)
+{
+    NautilusFilesView *source = operations_view_for_directory (f, f->source_dir);
+    operations_select (f, source, f->source_file); operations_alt_return ();
+    g_autofree char *name = g_file_get_basename (f->source_file);
+    g_autoptr (AdwDialog) selected = operations_wait_dialog_label (f, name);
+    operations_new_tab_at (f, f->sibling);
+    g_assert_nonnull (operations_find_label (GTK_WIDGET (selected), name));
+    operations_key (GDK_KEY_Escape); operations_settle (f);
+    g_assert_null (adw_application_window_get_visible_dialog (ADW_APPLICATION_WINDOW (f->window)));
+    operations_assert_focus (f, operations_view_for_directory (f, f->sibling));
+    NautilusFilesView *parent = operations_open_parent (f);
+    g_assert_true (g_file_equal (nautilus_window_slot_get_location (f->slot), f->child));
+    /* Genuine background click enters native directory Properties while the
+     * parent had its child disclosed; no replacement properties surface. */
+    operations_click (f, GTK_WIDGET (parent), 273);
+    operations_activate_menu_label (parent, "Properties");
+    g_autoptr (AdwDialog) directory = operations_wait_dialog_label (f, "destination");
+    operations_new_tab_at (f, f->sibling);
+    g_assert_nonnull (operations_find_label (GTK_WIDGET (directory), "destination"));
+    operations_key (GDK_KEY_Escape); operations_settle (f);
+    g_assert_null (adw_application_window_get_visible_dialog (ADW_APPLICATION_WINDOW (f->window)));
+    operations_assert_bytes (f, f->source_file, payload); operations_assert_sentinels (f);
+    operations_assert_focus (f, operations_view_for_directory (f, f->sibling));
+}
+
+static guint32
+operations_mode (OperationFixture *f, GFile *file)
+{
+    operations_owned (f, file);
+    g_autoptr (GFileInfo) info = g_file_query_info (file, G_FILE_ATTRIBUTE_UNIX_MODE,
+        G_FILE_QUERY_INFO_NOFOLLOW_SYMLINKS, NULL, NULL);
+    g_assert_nonnull (info); return g_file_info_get_attribute_uint32 (info, G_FILE_ATTRIBUTE_UNIX_MODE);
+}
+
+static void
+operations_permission_choice (OperationFixture *f, AdwComboRow *row, gboolean writable)
+{
+    g_assert_true (gtk_widget_grab_focus (GTK_WIDGET (row)));
+    operations_key (GDK_KEY_Return); operations_key (GDK_KEY_Home);
+    if (writable) { operations_key (GDK_KEY_Down); }
+    operations_key (GDK_KEY_Return);
+    guint32 expected = writable ? S_IWUSR : 0;
+    gint64 deadline = g_get_monotonic_time () + 10 * G_TIME_SPAN_SECOND;
+    while ((operations_mode (f, f->source_file) & S_IWUSR) != expected)
+    {
+        g_assert_cmpint (g_get_monotonic_time (), <, deadline); operations_pump (10);
+    }
+    g_assert_cmpuint (adw_combo_row_get_selected (row), ==, writable ? 1 : 0);
+}
+
+static void
+test_native_permissions (OperationFixture *f, gconstpointer unused)
+{
+    guint32 original = operations_mode (f, f->source_file);
+    g_assert_true ((original & S_IWUSR) != 0);
+    NautilusFilesView *source = operations_view_for_directory (f, f->source_dir);
+    operations_select (f, source, f->source_file); operations_alt_return ();
+    g_autofree char *name = g_file_get_basename (f->source_file);
+    g_autoptr (AdwDialog) dialog = operations_wait_dialog_label (f, name);
+    GtkWidget *label = operations_find_label (GTK_WIDGET (dialog), "Permissions");
+    g_assert_nonnull (label);
+    GtkWidget *navigation = gtk_widget_get_ancestor (label, ADW_TYPE_ACTION_ROW);
+    g_assert_nonnull (navigation); gtk_widget_grab_focus (navigation); operations_key (GDK_KEY_Return);
+    g_autoptr (AdwDialog) loaded = operations_wait_dialog_label (f, "Owner");
+    GtkWidget *owner = operations_find_label (GTK_WIDGET (dialog), "Owner");
+    GtkWidget *owner_row = gtk_widget_get_ancestor (owner, ADW_TYPE_COMBO_ROW);
+    g_assert_nonnull (owner_row);
+    GtkWidget *access = gtk_widget_get_next_sibling (owner_row);
+    while (access != NULL && !gtk_widget_get_visible (access)) { access = gtk_widget_get_next_sibling (access); }
+    g_assert_true (ADW_IS_COMBO_ROW (access));
+    g_assert_cmpstr (adw_preferences_row_get_title (ADW_PREFERENCES_ROW (access)), ==, "Access");
+    operations_new_tab_at (f, f->sibling);
+    operations_permission_choice (f, ADW_COMBO_ROW (access), FALSE);
+    g_assert_cmpuint (operations_mode (f, f->source_file), ==, original & ~S_IWUSR);
+    operations_permission_choice (f, ADW_COMBO_ROW (access), TRUE);
+    g_assert_cmpuint (operations_mode (f, f->source_file), ==, original);
+    operations_key (GDK_KEY_Escape);
+    if (adw_application_window_get_visible_dialog (ADW_APPLICATION_WINDOW (f->window)) != NULL)
+    {
+        operations_key (GDK_KEY_Escape);
+    }
+    operations_settle (f);
+    g_assert_null (adw_application_window_get_visible_dialog (ADW_APPLICATION_WINDOW (f->window)));
+    operations_assert_bytes (f, f->source_file, payload); operations_assert_sentinels (f);
+    operations_assert_focus (f, operations_view_for_directory (f, f->sibling));
+}
+
+static void
+operations_prepare_templates (void)
+{
+    operations_assert_private_home ();
+    g_autoptr (GFile) runtime = g_file_new_for_path (g_get_user_runtime_dir ());
+    g_autoptr (GFile) private = g_file_get_parent (runtime);
+    g_autoptr (GFile) expected_config = g_file_get_child (private, "config");
+    g_autoptr (GFile) config = g_file_new_for_path (g_get_user_config_dir ());
+    g_assert_true (g_file_equal (config, expected_config));
+    g_autofree char *dirs = g_build_filename (g_get_user_config_dir (), "user-dirs.dirs", NULL);
+    const char setting[] = "XDG_TEMPLATES_DIR=\"$HOME/Templates\"\n";
+    g_assert_true (g_file_set_contents (dirs, setting, -1, NULL));
+    g_reload_user_special_dirs_cache ();
+    g_autofree char *templates = g_build_filename (g_get_home_dir (), "Templates", NULL);
+    g_assert_cmpstr (g_get_user_special_dir (G_USER_DIRECTORY_TEMPLATES), ==, templates);
+    g_assert_cmpint (g_mkdir_with_parents (templates, 0700), ==, 0);
+    g_autofree char *path = g_build_filename (templates, "owned-template.txt", NULL);
+    g_assert_true (g_file_set_contents (path, "Owned template payload\n", -1, NULL));
+}
+
+static void
+test_native_template (OperationFixture *f, gconstpointer unused)
+{
+    NautilusFilesView *parent = operations_open_parent (f);
+    g_assert_true (g_file_equal (nautilus_window_slot_get_location (f->slot), f->child));
+    operations_click (f, GTK_WIDGET (parent), 273);
+    guint history = g_list_length (nautilus_window_slot_get_back_history (f->slot));
+    operations_activate_menu_label (parent, "New Document");
+    operations_activate_menu_label (parent, "owned-template.txt");
+    g_autoptr (GFile) created = g_file_get_child (f->parent, "owned-template.txt");
+    operations_wait_file (f, parent, created); operations_settle (f);
+    operations_assert_bytes (f, created, "Owned template payload\n");
+    g_assert_cmpuint (f->jobs->len, ==, 1);
+    g_autoptr (GFile) wrong_child = g_file_get_child (f->child, "owned-template.txt");
+    g_autoptr (GFile) wrong_sibling = g_file_get_child (f->sibling, "owned-template.txt");
+    g_assert_false (g_file_query_exists (wrong_child, NULL)); g_assert_false (g_file_query_exists (wrong_sibling, NULL));
+    g_assert_cmpuint (g_list_length (nautilus_window_slot_get_back_history (f->slot)), ==, history);
+    operations_assert_sentinels (f); operations_assert_focus (f, parent);
+}
+
 int
 main (int argc, char **argv)
 {
@@ -1642,9 +2307,17 @@ main (int argc, char **argv)
     {
         return clipboard_child_main (argv[2], argv[3]);
     }
-    if (argc == 3 && g_str_equal (argv[1], "--native-deletion"))
+    if (argc == 3 && g_str_equal (argv[1], "--native-operation"))
     {
-        return operations_deletion_child_main (argv[2]);
+        return operations_native_child_main (argv[2]);
+    }
+    if (argc == 3 && g_str_equal (argv[1], "--open-receiver"))
+    {
+        return operations_receiver_main (argv[2], FALSE);
+    }
+    if (argc == 3 && g_str_equal (argv[1], "--console-receiver"))
+    {
+        return operations_receiver_main (argv[2], TRUE);
     }
     g_test_init (&argc, &argv, NULL);
     if (g_getenv ("MILLER_TEST_SESSION") == NULL || g_getenv ("MILLER_TEST_HOME") == NULL)
@@ -1655,6 +2328,7 @@ main (int argc, char **argv)
      * implementation acceptance remains in its separate native test. */
     g_setenv ("GDK_DEBUG", "no-portals", TRUE);
     g_autoptr (GError) error = NULL; input = miller_test_input_new (&error); g_assert_no_error (error);
+    operations_prepare_templates ();
     nautilus_register_resource (); nautilus_global_preferences_init (); nautilus_ensure_extension_points ();
     g_autoptr (NautilusTagManager) tags = nautilus_tag_manager_new_dummy ();
     test_init_config_dir ();
@@ -1705,9 +2379,25 @@ main (int argc, char **argv)
     COLUMN_CASE ("permission-denied", test_native_permission_error);
     COLUMN_CASE ("partial-failure", test_native_permission_error);
     COLUMN_CASE ("progress-cancel", test_progress_cancel);
-    COLUMN_CASE ("permanent-delete-confirmation", test_native_deletion_child);
-    COLUMN_CASE ("trash-undo-restore", test_native_deletion_child);
-    COLUMN_CASE ("trash-unavailable", test_native_deletion_child);
+    COLUMN_CASE ("permanent-delete-confirmation", test_native_operation_child);
+    COLUMN_CASE ("trash-undo-restore", test_native_operation_child);
+    COLUMN_CASE ("trash-unavailable", test_native_operation_child);
+    COLUMN_CASE ("compress-parent-target", test_native_compress);
+    COLUMN_CASE ("compress-source-pruned", test_native_compress);
+    COLUMN_CASE ("compress-source-pruned-cancel", test_native_compress);
+    COLUMN_CASE ("extract-parent-target", test_native_extract);
+    COLUMN_CASE ("extract-source-pruned", test_native_extract);
+    COLUMN_CASE ("extract-source-pruned-cancel", test_native_extract);
+    COLUMN_CASE ("link-supported", test_native_link);
+    COLUMN_CASE ("link-in-place-supported", test_native_link);
+    COLUMN_CASE ("multi-rename-captured-selection", test_native_operation_child);
+    COLUMN_CASE ("open-once", test_native_open);
+    COLUMN_CASE ("open-with-captured-selection", test_native_open);
+    COLUMN_CASE ("terminal-directory", test_native_terminal);
+    COLUMN_CASE ("properties-selection-and-directory", test_native_properties);
+    COLUMN_CASE ("permissions-native", test_native_permissions);
+    COLUMN_CASE ("template-parent-target", test_native_template);
+    COLUMN_CASE ("extract-here", test_native_extract);
     /* A real GMainLoop keeps its context owned while running. Match that
      * contract while these tests manually iterate/pump GTK: native operation
      * UI dispatch must never acquire the default context on a worker. */
