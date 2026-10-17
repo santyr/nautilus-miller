@@ -64,6 +64,18 @@ jobs:
       - name: Check development identity
         if: matrix.profile == 'Miller'
         run: runuser -u miller -- bash -ec 'cd /home/miller/nautilus; python3 tools/miller/check-profile.py build-ci'
+      - name: Permit native test namespaces on the disposable hosted VM
+        # Ubuntu's host AppArmor userns restriction also applies to the Fedora
+        # container. Keep bwrap/Home isolation; change only this ephemeral VM.
+        # https://documentation.ubuntu.com/release-notes/24.04/
+        if: runner.environment == 'github-hosted'
+        run: |
+          restriction=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
+          if [ -e "$restriction" ]; then
+            cat "$restriction"
+            echo 0 > "$restriction"
+          fi
+          runuser -u miller -- bwrap --unshare-user --ro-bind / / --proc /proc -- /usr/bin/true
       - name: Run existing tests in guarded disposable sessions and Home
         run: |
           runuser -u miller -- bash -ec '
