@@ -40,7 +40,7 @@ jobs:
       PREFIX: ${{ matrix.prefix }}
     steps:
       - name: Install checkout and existing harness dependencies
-        run: dnf -y install dnf5-plugins rpm-build git tar python3-gobject bubblewrap dbus-daemon mutter glibc-langpack-en mesa-dri-drivers xdg-desktop-portal-gnome gvfs-archive glycin-thumbnailer gst-thumbnailers xdg-utils
+        run: dnf -y install dnf5-plugins rpm-build git tar python3-gobject bubblewrap dbus-daemon mutter glibc-langpack-en mesa-dri-drivers xdg-desktop-portal-gnome gvfs-archive glycin-thumbnailer gst-thumbnailers papers-thumbnailer xdg-utils
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install native Fedora build dependencies
         run: dnf -y builddep packaging/fedora/nautilus-miller.spec
