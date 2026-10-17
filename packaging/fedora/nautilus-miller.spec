@@ -20,7 +20,7 @@
 
 Name:           nautilus
 Version:        50.4
-Release:        1.miller2%{?dist}
+Release:        1.miller3%{?dist}
 Summary:        GNOME file manager with Finder-style Miller columns
 
 # Sources are GPL-3.0-or-later and Appdata is CC0-1.0.

@@ -113,6 +113,8 @@ setup (Fixture *f, gconstpointer unused)
     GtkWidget *box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 4);
     f->entry = gtk_entry_new ();
     f->preview = NAUTILUS_MILLER_PREVIEW (nautilus_miller_preview_new ());
+    /* Match create_preview_pane(): give the scrollable inspector the available height. */
+    gtk_widget_set_vexpand (GTK_WIDGET (f->preview), TRUE);
     gtk_box_append (GTK_BOX (box), f->entry);
     gtk_box_append (GTK_BOX (box), GTK_WIDGET (f->preview));
     gtk_window_set_child (GTK_WINDOW (f->window), box);
@@ -130,6 +132,55 @@ teardown (Fixture *f, gconstpointer unused)
     pump (30);
     g_clear_object (&f->root); g_clear_object (&f->first); g_clear_object (&f->second);
     test_clear_tmp_dir ();
+}
+
+/* The inspector must fit a narrow pane even for a filename with no word
+ * boundaries; otherwise GtkPaned pushes its content outside the window. */
+static void
+test_narrow_long_name (Fixture *f, gconstpointer unused)
+{
+    g_autofree char *stem = g_strnfill (180, 'x');
+    g_autofree char *name = g_strconcat (stem, ".h", NULL);
+    g_autoptr (GFile) file = g_file_get_child (f->root, name);
+    g_assert_true (g_file_replace_contents (file, "header", 6, NULL, FALSE, 0, NULL, NULL, NULL));
+    select_one (f, file); settle (f);
+    int minimum;
+    gtk_widget_measure (GTK_WIDGET (f->preview), GTK_ORIENTATION_HORIZONTAL, -1, &minimum, NULL, NULL, NULL);
+    g_assert_cmpint (minimum, <=, 240);
+}
+
+static void
+test_non_text_content_space (Fixture *f, gconstpointer unused)
+{
+    select_one (f, f->first); settle (f);
+    GtkWidget *view = find_type (GTK_WIDGET (f->preview), GTK_TYPE_TEXT_VIEW);
+    GtkWidget *scroller = gtk_widget_get_ancestor (view, GTK_TYPE_SCROLLED_WINDOW);
+    g_assert_cmpint (gtk_widget_get_height (scroller), >=, 120);
+    select_one (f, f->root); settle (f);
+    g_assert_cmpint (gtk_widget_get_height (scroller), <, 64);
+}
+
+/* When metadata is taller than the available pane, its bottom must remain
+ * reachable using GTK scrolling rather than setting the window minimum. */
+static void
+test_short_pane (Fixture *f, gconstpointer unused)
+{
+    select_one (f, f->first); settle (f);
+    int minimum;
+    gtk_widget_measure (GTK_WIDGET (f->preview), GTK_ORIENTATION_VERTICAL, 240, &minimum, NULL, NULL, NULL);
+    g_assert_cmpint (minimum, <=, 100);
+    GtkWidget *status = find_label (GTK_WIDGET (f->preview), "Text preview");
+    GtkWidget *scroller = gtk_widget_get_ancestor (status, GTK_TYPE_SCROLLED_WINDOW);
+    g_assert_nonnull (scroller);
+    gtk_window_set_default_size (GTK_WINDOW (f->window), 240, 260);
+    pump (120);
+    GtkAdjustment *adjustment = gtk_scrolled_window_get_vadjustment (GTK_SCROLLED_WINDOW (scroller));
+    g_assert_cmpfloat (gtk_adjustment_get_upper (adjustment), >, gtk_adjustment_get_page_size (adjustment));
+    gtk_adjustment_set_value (adjustment, gtk_adjustment_get_upper (adjustment));
+    pump (40);
+    g_assert_cmpfloat (gtk_adjustment_get_value (adjustment), >, 0);
+    select_one (f, f->second); settle (f);
+    g_assert_cmpfloat (gtk_adjustment_get_value (adjustment), ==, 0);
 }
 
 static void
@@ -1201,6 +1252,8 @@ main (int argc, char **argv)
     g_application_set_flags (G_APPLICATION (app), g_application_get_flags (G_APPLICATION (app)) | G_APPLICATION_NON_UNIQUE);
     g_assert_true (g_application_register (G_APPLICATION (app), NULL, NULL));
 #define CASE(name, fn) g_test_add ("/miller/preview/" name, Fixture, NULL, setup, fn, teardown)
+    CASE ("non-text-content-space", test_non_text_content_space);
+    CASE ("narrow-long-name", test_narrow_long_name); CASE ("short-pane", test_short_pane);
     CASE ("png-jpeg-still", test_images); CASE ("image-output-limit", test_image_output_limit);
     CASE ("malicious-name", test_malicious_name); CASE ("svg-external-resources", test_svg_external_resources);
     CASE ("custom-icon-preview", test_custom_icon_preview);

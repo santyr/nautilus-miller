@@ -1,6 +1,12 @@
 # Preview providers, privacy and limits
 
-These are development-build capabilities. The installed replacement RPM has not been updated by the completion work. Acceptance results and remaining gates are recorded separately in the [acceptance ledger](acceptance.md).
+These capabilities are included in Miller2 and later builds. The host must install a new RPM to pick up subsequent source changes. Release evidence is recorded in the [acceptance ledger](acceptance.md).
+
+## Inspector layout
+
+The inspector wraps long filenames within the chosen pane width. Its body scrolls vertically when metadata and content cannot fit in the available height; text also has its own scrollable reading area. Image previews preserve the complete image aspect ratio. An inactive text area does not expand beneath an image.
+
+A **Truncated text preview** message means the inspector reached its 32 KiB display limit; scrolling cannot reveal the rest of that file. Press **Space** for the existing Sushi preview or **Open** for the associated application to inspect the full file.
 
 ## Existing providers
 

@@ -482,7 +482,9 @@ text_ready (GObject *source, GAsyncResult *result, gpointer data)
                 gsize display = MIN (length, TEXT_DISPLAY_LIMIT);
                 while (display > 0 && display < length && ((guchar) text[display] & 0xc0) == 0x80) { display--; }
                 g_autoptr (GtkTextBuffer) buffer = g_object_ref (gtk_text_view_get_buffer (self->text_view));
-                gtk_widget_set_visible (self->text_scroller, TRUE);
+                gtk_widget_set_vexpand (self->text_scroller, TRUE);
+                if (!current (self, request->generation)) { request_finished (request); return; }
+                gtk_scrolled_window_set_min_content_height (GTK_SCROLLED_WINDOW (self->text_scroller), 120);
                 if (current (self, request->generation)) { gtk_text_buffer_set_text (buffer, text != NULL ? text : "", display); }
                 label_text (self, self->status, length > display ? _("Truncated text preview") : _("Text preview"), request->generation);
             }
@@ -741,9 +743,17 @@ refresh (NautilusMillerPreview *self)
     g_clear_handle_id (&self->aggregate_idle, g_source_remove);
     if (self->request != NULL) { g_cancellable_cancel (self->request->cancellable); }
     self->queued = self->timed_out = FALSE;
+    GtkAdjustment *scroll = gtk_scrolled_window_get_vadjustment (GTK_SCROLLED_WINDOW (adw_bin_get_child (ADW_BIN (self))));
+    gtk_adjustment_set_value (scroll, 0);
+    if (!current (self, generation)) { return; }
+
     gtk_picture_set_paintable (self->picture, NULL);
     if (!current (self, generation)) { return; }
     gtk_widget_set_visible (GTK_WIDGET (self->picture), FALSE);
+    if (!current (self, generation)) { return; }
+    gtk_widget_set_vexpand (self->text_scroller, FALSE);
+    if (!current (self, generation)) { return; }
+    gtk_scrolled_window_set_min_content_height (GTK_SCROLLED_WINDOW (self->text_scroller), 0);
     if (!current (self, generation)) { return; }
     /* A selection may change from an old buffer's changed handler. Replace
      * that buffer instead of recursively mutating its live text iterators. */
@@ -849,6 +859,7 @@ append_label (GtkBox *box, const char *text)
     GtkWidget *label = gtk_label_new (text);
     gtk_label_set_xalign (GTK_LABEL (label), 0.0);
     gtk_label_set_wrap (GTK_LABEL (label), TRUE);
+    gtk_label_set_wrap_mode (GTK_LABEL (label), PANGO_WRAP_WORD_CHAR);
     gtk_box_append (box, label);
     return GTK_LABEL (label);
 }
@@ -874,6 +885,7 @@ nautilus_miller_preview_init (NautilusMillerPreview *self)
     gtk_picture_set_can_shrink (self->picture, TRUE);
     gtk_picture_set_content_fit (self->picture, GTK_CONTENT_FIT_CONTAIN);
     gtk_widget_set_vexpand (GTK_WIDGET (self->picture), TRUE);
+    gtk_widget_set_size_request (GTK_WIDGET (self->picture), -1, 128);
     gtk_widget_set_visible (GTK_WIDGET (self->picture), FALSE);
     gtk_accessible_update_property (GTK_ACCESSIBLE (self->picture), GTK_ACCESSIBLE_PROPERTY_LABEL, _("Image preview"), -1);
     gtk_box_append (GTK_BOX (box), GTK_WIDGET (self->picture));
@@ -891,11 +903,18 @@ nautilus_miller_preview_init (NautilusMillerPreview *self)
     gtk_accessible_update_property (GTK_ACCESSIBLE (view), GTK_ACCESSIBLE_PROPERTY_LABEL, _("Text preview"), -1);
     GtkWidget *scroller = gtk_scrolled_window_new ();
     self->text_scroller = scroller;
+    /* Keep the view allocated: GTK can otherwise wrap new text at zero
+     * width before the first frame. Only active text content expands. */
     gtk_scrolled_window_set_policy (GTK_SCROLLED_WINDOW (scroller), GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
     gtk_scrolled_window_set_child (GTK_SCROLLED_WINDOW (scroller), view);
-    gtk_widget_set_vexpand (scroller, TRUE);
+    gtk_widget_set_vexpand (scroller, FALSE);
     gtk_box_append (GTK_BOX (box), scroller);
-    adw_bin_set_child (ADW_BIN (self), box);
+    /* Keep metadata and content reachable when the pane is short. The text
+     * view retains its own scroll position and a usable minimum height. */
+    GtkWidget *body_scroller = gtk_scrolled_window_new ();
+    gtk_scrolled_window_set_policy (GTK_SCROLLED_WINDOW (body_scroller), GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+    gtk_scrolled_window_set_child (GTK_SCROLLED_WINDOW (body_scroller), box);
+    adw_bin_set_child (ADW_BIN (self), body_scroller);
     const char *keys[] = { NAUTILUS_PREFERENCES_SHOW_FILE_THUMBNAILS, NAUTILUS_PREFERENCES_FILE_THUMBNAIL_LIMIT,
                           NAUTILUS_PREFERENCES_MILLER_PREVIEW_REMOTE };
     for (guint i = 0; i < G_N_ELEMENTS (keys); i++)
